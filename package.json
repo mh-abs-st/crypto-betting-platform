@@ -1,0 +1,25 @@
+{
+  "name": "yuubet",
+  "version": "0.1.0",
+  "private": true,
+  "description": "YuuBet: cryptocurrency betting platform with provably fair games",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "tsx --test \"packages/**/*.test.ts\" \"services/**/*.test.ts\" \"tests/**/*.test.ts\"",
+    "typecheck": "tsc --noEmit",
+    "dev:auth": "tsx watch services/auth/src/main.ts",
+    "dev:wallet": "tsx watch services/wallet/src/main.ts",
+    "dev:games": "tsx watch services/games/src/main.ts",
+    "dev:gateway": "tsx watch services/gateway/src/main.ts",
+    "dev:web": "npm --prefix web run dev",
+    "db:migrate": "psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -f db/migrations/001_init.sql"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

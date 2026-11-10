@@ -1,0 +1,50 @@
+import { GameError } from "@yuubet/games";
+import { HttpError, Reply, Router, bodyObject, requireInternal, requireUser, type RequestContext } from "@yuubet/service-kit";
+import type { GamesService } from "./service";
+
+const STATUS_BY_CODE: Record<string, number> = {
+  NOT_FOUND: 404,
+  MATCH_CLOSED: 409,
+  ROUND_CLOSING: 409,
+  SEED_CHANGED: 409,
+  OWN_MATCH: 403,
+  NOT_YOUR_MATCH: 403,
+};
+
+/** HTTP endpoints for the games. Reached only through the gateway. */
+export function buildGamesRouter(service: GamesService, internalKey: string): Router {
+  const player = (ctx: RequestContext) => {
+    requireInternal(ctx, internalKey);
+    return requireUser(ctx);
+  };
+
+  return new Router()
+    .mapError((error) =>
+      error instanceof GameError ? new HttpError(STATUS_BY_CODE[error.code] ?? 400, error.code, error.message) : undefined,
+    )
+    .get("/health", () => ({ ok: true }))
+    .get("/config", (ctx) => {
+      player(ctx);
+      return service.describe();
+    })
+    .get("/fair/seed", (ctx) => service.seedInfo(player(ctx).id))
+    .post("/fair/rotate", (ctx) => service.rotateSeed(player(ctx).id, bodyObject(ctx).clientSeed))
+    .post("/roulette/spin", (ctx) => service.spinRoulette(player(ctx), bodyObject(ctx)))
+    .get("/versus", (ctx) => {
+      player(ctx);
+      return service.listVersus();
+    })
+    .post("/versus", async (ctx) => new Reply(201, await service.createVersus(player(ctx), bodyObject(ctx))))
+    .post("/versus/:id/join", (ctx) => service.joinVersus(player(ctx), ctx.params.id!, bodyObject(ctx)))
+    .post("/versus/:id/cancel", (ctx) => service.cancelVersus(player(ctx), ctx.params.id!))
+    .get("/jackpot", async (ctx) => {
+      player(ctx);
+      await service.drawJackpotIfDue();
+      return service.currentJackpot();
+    })
+    .get("/jackpot/history", (ctx) => {
+      player(ctx);
+      return service.listJackpotHistory();
+    })
+    .post("/jackpot/enter", (ctx) => service.enterJackpot(player(ctx), bodyObject(ctx)));
+}
