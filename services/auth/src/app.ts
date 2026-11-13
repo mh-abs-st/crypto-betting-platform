@@ -1,5 +1,5 @@
 import { Reply, Router, bodyObject, requireInternal, signToken } from "@yuubet/service-kit";
-import { UserStore, type User } from "./users";
+import { MemoryUserStore, type User, type UserStore } from "./users";
 
 export interface AuthConfig {
   jwtSecret: string;
@@ -8,7 +8,7 @@ export interface AuthConfig {
 }
 
 /** Sign-up and sign-in. Issues the token that the gateway checks on every request. */
-export function buildAuthRouter(config: AuthConfig, users = new UserStore()): Router {
+export function buildAuthRouter(config: AuthConfig, users: UserStore = new MemoryUserStore()): Router {
   const ttl = config.tokenTtlSeconds ?? 12 * 60 * 60;
   const session = (user: User) => ({
     token: signToken(user, config.jwtSecret, ttl),
