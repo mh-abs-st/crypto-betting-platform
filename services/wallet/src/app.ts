@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { HttpError, Router, bodyObject, requireInternal, requireUser } from "@yuubet/service-kit";
-import { Ledger, type EntryKind, type LedgerEntry } from "./ledger";
+import { MemoryLedger, type EntryKind, type LedgerEntry, type LedgerStore } from "./ledger";
 
 export interface WalletConfig {
   internalKey: string;
@@ -27,27 +27,27 @@ function view(entry: LedgerEntry) {
  * Balances. Players read their own balance under /me; only other services may
  * move money, under /internal. Crypto deposits and withdrawals are not built yet.
  */
-export function buildWalletRouter(config: WalletConfig, ledger = new Ledger()): Router {
+export function buildWalletRouter(config: WalletConfig, ledger: LedgerStore = new MemoryLedger()): Router {
   return new Router()
     .get("/health", () => ({ ok: true }))
-    .get("/me/balance", (ctx) => {
+    .get("/me/balance", async (ctx) => {
       requireInternal(ctx, config.internalKey);
-      return { balances: ledger.balancesOf(requireUser(ctx).id) };
+      return { balances: await ledger.balancesOf(requireUser(ctx).id) };
     })
-    .get("/me/transactions", (ctx) => {
+    .get("/me/transactions", async (ctx) => {
       requireInternal(ctx, config.internalKey);
-      return { transactions: ledger.history(requireUser(ctx).id).map(view) };
+      return { transactions: (await ledger.history(requireUser(ctx).id)).map(view) };
     })
-    .post("/me/faucet", (ctx) => {
+    .post("/me/faucet", async (ctx) => {
       requireInternal(ctx, config.internalKey);
       const user = requireUser(ctx);
       if (!config.devFaucet) {
         throw new HttpError(404, "NOT_FOUND", "No such endpoint");
       }
-      if (ledger.balance(user.id, "USDT") >= FAUCET_MAX_BALANCE) {
+      if ((await ledger.balance(user.id, "USDT")) >= FAUCET_MAX_BALANCE) {
         throw new HttpError(409, "FAUCET_LIMIT", "Your balance is already high enough to play");
       }
-      ledger.apply({
+      await ledger.apply({
         id: randomUUID(),
         userId: user.id,
         currency: "USDT",
@@ -55,15 +55,15 @@ export function buildWalletRouter(config: WalletConfig, ledger = new Ledger()): 
         kind: "faucet",
         ref: "dev-faucet",
       });
-      return { balances: ledger.balancesOf(user.id) };
+      return { balances: await ledger.balancesOf(user.id) };
     })
-    .post("/internal/transactions", (ctx) => {
+    .post("/internal/transactions", async (ctx) => {
       requireInternal(ctx, config.internalKey);
       const body = bodyObject(ctx);
       if (typeof body.amount !== "string" || !/^-?[0-9]{1,30}$/.test(body.amount)) {
         throw new HttpError(400, "INVALID_TRANSACTION", "amount must be a whole number as a string");
       }
-      const entry = ledger.apply({
+      const entry = await ledger.apply({
         id: String(body.id ?? ""),
         userId: String(body.userId ?? ""),
         currency: String(body.currency ?? ""),

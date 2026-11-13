@@ -2,13 +2,13 @@
 
 A cryptocurrency betting platform built around provably fair games.
 
-**Status: early development build.** Three games are playable with play money: Roulette, Versus and Jackpot. There are no real deposits or withdrawals yet, and game state is held in memory, so it is lost when a service restarts.
+**Status: early development build.** Three games are playable with play money: Roulette, Versus and Jackpot. There are no real deposits or withdrawals yet. All state is kept in PostgreSQL when `DATABASE_URL` is set; without it, the services hold state in memory and lose it on restart.
 
 > Operating a real-money gambling site requires a licence in most countries, along with age and identity checks, anti-money-laundering controls and responsible-gambling tools. Those are tracked as issues and must be in place before this handles real funds.
 
 ## What works today
 
-- **Accounts**: sign up and sign in; passwords stored as salted scrypt hashes; signed login tokens
+- **Accounts**: sign up and sign in; passwords stored as salted scrypt hashes with their parameters; signed login tokens
 - **Wallet**: balances in whole smallest units, an append-only ledger, and transaction ids that make retries safe
 - **Roulette**: European wheel with straight, colour, odd/even, high/low, dozen and column bets
 - **Versus**: two players stake the same amount on opposite sides of a coin; winner takes the pot less a 2% fee

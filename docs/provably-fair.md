@@ -41,4 +41,3 @@ console.log(BigInt("0x" + digest.slice(0, 32)) % 37n);              // the roule
 
 - **Jackpot client seed.** It is built from public facts about the round. The house knows the server seed, so it could in principle add an entry of a chosen size to steer the result. The fix is to take the client seed from something nobody controls and that does not exist yet when entries close, such as a future block hash. This is tracked as an issue.
 - **Modulo bias.** Reducing 128 bits modulo the range is very slightly uneven. For ranges below 2^64 the bias is under 2^-64.
-- **Seeds are in memory.** A restart loses unrevealed server seeds, so bets made with them can no longer be verified.
