@@ -45,6 +45,16 @@ jobs:
         run: npm run lint
       - name: Formatting
         run: npm run format:check
+      - name: Save the formatting fix as a patch
+        if: failure()
+        run: npx prettier --write . && git diff > formatting.patch
+      - name: Upload the formatting patch (apply with `git apply formatting.patch`)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: formatting-patch
+          path: formatting.patch
+          if-no-files-found: ignore
       - name: Migrations apply to an empty database, and again with nothing to do
         run: npm run db:migrate && npm run db:migrate
       - name: Test, including PostgreSQL
