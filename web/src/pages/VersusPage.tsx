@@ -1,9 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, type VersusMatch } from "../api";
+import { serverClock } from "../clock";
 import type { PageProps } from "../App";
 import { CURRENCY, formatAmount, toUnits } from "../format";
 
 const other = (side: string) => (side === "heads" ? "tails" : "heads");
+
+function timeLeft(ms: number): string {
+  const minutes = Math.ceil(ms / 60_000);
+  return minutes > 1 ? `${minutes} min left` : "under a minute left";
+}
 
 export function VersusPage({ session, refreshBalance }: PageProps) {
   const [amount, setAmount] = useState("5");
@@ -50,6 +56,7 @@ export function VersusPage({ session, refreshBalance }: PageProps) {
         <h2>Start a match</h2>
         <p className="muted">
           You and one opponent stake the same amount on opposite sides of a coin. The winner takes the pot, less a 2% fee.
+          A match nobody joins within 30 minutes is cancelled and your stake returned.
         </p>
         <label className="inline">
           Stake ({CURRENCY})
@@ -80,6 +87,7 @@ export function VersusPage({ session, refreshBalance }: PageProps) {
                   {match.creator.name} on {match.creatorSide}
                 </span>
                 <span>{formatAmount(match.stake)}</span>
+                <span className="muted">{timeLeft(serverClock.until(match.expiresAt))}</span>
                 {mine ? (
                   <button className="link" onClick={() => act(`/games/versus/${match.id}/cancel`, {})}>
                     Cancel

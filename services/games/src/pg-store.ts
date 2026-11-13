@@ -58,6 +58,7 @@ interface MatchRow {
   prize: string | null;
   fee: string | null;
   created_at: Date;
+  expires_at: Date;
   joined_at: Date | null;
   payout_due_since: Date | null;
 }
@@ -76,6 +77,7 @@ function toMatch(row: MatchRow): VersusMatch {
     serverSeed: row.server_seed,
     serverSeedHash: row.server_seed_hash,
     createdAt: row.created_at.getTime(),
+    expiresAt: row.expires_at.getTime(),
     joiner,
     joinerSeed: row.joiner_seed ?? undefined,
     result: row.result ?? undefined,
@@ -227,25 +229,46 @@ export class PgGamesStore implements GamesStore {
 
   // ----- Versus -----
 
-  async insertMatch(match: VersusMatch) {
-    await this.pool.query(
-      `INSERT INTO games.versus_matches
-         (id, currency, stake, status, creator_id, creator_name, creator_side, creator_seed, server_seed, server_seed_hash, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-      [
-        match.id,
-        match.currency,
-        match.stake.toString(),
-        match.status,
-        match.creator.id,
-        match.creator.name,
-        match.creatorSide,
-        match.creatorSeed,
-        match.serverSeed,
-        match.serverSeedHash,
-        new Date(match.createdAt),
-      ],
+  async countOpenMatches(creatorId: string) {
+    const { rows } = await this.pool.query<{ n: number }>(
+      "SELECT count(*)::int AS n FROM games.versus_matches WHERE creator_id = $1 AND status = 'open'",
+      [creatorId],
     );
+    return rows[0]!.n;
+  }
+
+  insertMatch(match: VersusMatch, maxOpen: number) {
+    return transaction(this.pool, async (client) => {
+      // One creator's inserts run one at a time, so two at once cannot both pass the limit.
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`versus-creator:${match.creator.id}`]);
+      const { rows } = await client.query<{ n: number }>(
+        "SELECT count(*)::int AS n FROM games.versus_matches WHERE creator_id = $1 AND status = 'open'",
+        [match.creator.id],
+      );
+      const allowed = rows[0]!.n < maxOpen;
+      await client.query(
+        `INSERT INTO games.versus_matches
+           (id, currency, stake, status, creator_id, creator_name, creator_side, creator_seed, server_seed, server_seed_hash,
+            created_at, expires_at, settled_at, payout_due_since)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                 CASE WHEN $4 = 'cancelled' THEN now() END, CASE WHEN $4 = 'cancelled' THEN now() END)`,
+        [
+          match.id,
+          match.currency,
+          match.stake.toString(),
+          allowed ? "open" : "cancelled",
+          match.creator.id,
+          match.creator.name,
+          match.creatorSide,
+          match.creatorSeed,
+          match.serverSeed,
+          match.serverSeedHash,
+          new Date(match.createdAt),
+          new Date(match.expiresAt),
+        ],
+      );
+      return allowed;
+    });
   }
 
   async getMatch(id: string) {
@@ -256,11 +279,12 @@ export class PgGamesStore implements GamesStore {
     return rows[0] && toMatch(rows[0]);
   }
 
-  async listMatches(limit: number) {
+  async listMatches(limit: number, now: number) {
     const open = await this.pool.query<MatchRow>(
       `SELECT * FROM games.versus_matches
-       WHERE status = 'open' OR (status = 'settling' AND result IS NULL)
+       WHERE (status = 'open' AND expires_at > $1) OR (status = 'settling' AND result IS NULL)
        ORDER BY created_at DESC, id`,
+      [new Date(now)],
     );
     const recent = await this.pool.query<MatchRow>(
       `SELECT * FROM games.versus_matches
@@ -271,15 +295,15 @@ export class PgGamesStore implements GamesStore {
     return { open: open.rows.map(toMatch), recent: recent.rows.map(toMatch) };
   }
 
-  async claimJoin(id: string, joiner: Caller, joinerSeed: string) {
+  async claimJoin(id: string, joiner: Caller, joinerSeed: string, now: number) {
     if (!UUID.test(id)) {
       return undefined;
     }
     const { rows } = await this.pool.query<MatchRow>(
       `UPDATE games.versus_matches SET status = 'settling', joiner_id = $2, joiner_name = $3, joiner_seed = $4, joined_at = now()
-       WHERE id = $1 AND status = 'open' AND creator_id <> $2
+       WHERE id = $1 AND status = 'open' AND creator_id <> $2 AND expires_at > $5
        RETURNING *`,
-      [id, joiner.id, joiner.name, joinerSeed],
+      [id, joiner.id, joiner.name, joinerSeed, new Date(now)],
     );
     return rows[0] && toMatch(rows[0]);
   }
@@ -321,8 +345,21 @@ export class PgGamesStore implements GamesStore {
     return rows[0] && toMatch(rows[0]);
   }
 
+  async expireMatches(now: number) {
+    const { rows } = await this.pool.query<MatchRow>(
+      `UPDATE games.versus_matches SET status = 'expired', settled_at = now(), payout_due_since = now()
+       WHERE status = 'open' AND expires_at <= $1
+       RETURNING *`,
+      [new Date(now)],
+    );
+    return rows.map(toMatch);
+  }
+
   async markRefunded(id: string) {
-    await this.pool.query("UPDATE games.versus_matches SET payout_due_since = NULL WHERE id = $1 AND status = 'cancelled'", [id]);
+    await this.pool.query(
+      "UPDATE games.versus_matches SET payout_due_since = NULL WHERE id = $1 AND status IN ('cancelled', 'expired')",
+      [id],
+    );
   }
 
   async duePayouts(minAgeMs: number): Promise<DuePayouts> {
@@ -342,7 +379,7 @@ export class PgGamesStore implements GamesStore {
     return {
       spins: spins.rows.map(toSpin),
       prizes: all.filter((m) => m.status === "settling" && m.result !== undefined && m.payoutDueSince !== undefined),
-      refunds: all.filter((m) => m.status === "cancelled" && m.payoutDueSince !== undefined),
+      refunds: all.filter((m) => (m.status === "cancelled" || m.status === "expired") && m.payoutDueSince !== undefined),
       stalledJoins: all.filter((m) => m.status === "settling" && m.result === undefined),
     };
   }

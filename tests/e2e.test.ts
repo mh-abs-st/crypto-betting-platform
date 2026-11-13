@@ -186,6 +186,7 @@ test("jackpot through the gateway", async () => {
 
   clock += DEFAULT_GAMES_CONFIG.jackpotDurationMs + 1;
   const next = (await call("/games/jackpot", { token: jack })).body;
+  assert.equal(next.serverTime, clock, "timed responses carry the server's clock");
   assert.equal(next.number, round.number + 1);
 
   const settled = (await call("/games/jackpot/history", { token: jack })).body.rounds[0];

@@ -1,5 +1,7 @@
 /** Talks to the gateway. Every amount on the wire is a string of smallest units. */
 
+import { serverClock } from "./clock";
+
 const BASE: string = import.meta.env?.VITE_API_URL ?? "/api";
 const STORAGE_KEY = "yuubet.session";
 
@@ -50,6 +52,7 @@ export async function api<T>(path: string, options: { token?: string; body?: unk
   }
 
   let response: Response;
+  const sentAt = Date.now();
   try {
     response = await fetch(BASE + path, {
       method: options.method ?? (options.body === undefined ? "GET" : "POST"),
@@ -60,7 +63,14 @@ export async function api<T>(path: string, options: { token?: string; body?: unk
     throw new ApiError(0, "NETWORK", "Cannot reach YuuBet. Check your connection and try again.");
   }
 
-  const data = (await response.json().catch(() => ({}))) as { error?: { code: string; message: string } };
+  const receivedAt = Date.now();
+  const data = (await response.json().catch(() => ({}))) as {
+    error?: { code: string; message: string };
+    serverTime?: number;
+  };
+  if (typeof data.serverTime === "number") {
+    serverClock.observe(data.serverTime, sentAt, receivedAt);
+  }
   if (!response.ok) {
     throw new ApiError(response.status, data.error?.code ?? "ERROR", data.error?.message ?? "Request failed");
   }
@@ -99,12 +109,14 @@ export interface RouletteSpin {
 export interface VersusMatch {
   id: string;
   stake: string;
-  status: "open" | "settled" | "cancelled";
+  status: "open" | "settled" | "cancelled" | "expired";
   /** A prize or refund is owed and will be paid automatically. */
   payoutPending: boolean;
   creator: Caller;
   creatorSide: "heads" | "tails";
   serverSeedHash: string;
+  /** An open match is cancelled and refunded automatically at this time. */
+  expiresAt: number;
   joiner?: Caller;
   result?: "heads" | "tails";
   winner?: Caller;

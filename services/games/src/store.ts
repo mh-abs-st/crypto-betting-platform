@@ -25,7 +25,7 @@ export interface RouletteSpin {
   payoutDueSince?: number;
 }
 
-export type VersusStatus = "open" | "settling" | "settled" | "cancelled";
+export type VersusStatus = "open" | "settling" | "settled" | "cancelled" | "expired";
 
 export interface VersusMatch {
   id: string;
@@ -38,6 +38,8 @@ export interface VersusMatch {
   serverSeedHash: string;
   status: VersusStatus;
   createdAt: number;
+  /** When an open match is cancelled automatically and the creator refunded. */
+  expiresAt: number;
   joiner?: Caller;
   joinerSeed?: string;
   result?: Side;
@@ -104,7 +106,7 @@ export interface DuePayouts {
   spins: RouletteSpin[];
   /** Matches with a result whose prize is not confirmed. */
   prizes: VersusMatch[];
-  /** Cancelled matches whose refund is not confirmed. */
+  /** Cancelled or expired matches whose refund is not confirmed. */
   refunds: VersusMatch[];
   /** Matches whose seat was taken but no result recorded: the join was interrupted. */
   stalledJoins: VersusMatch[];
@@ -138,12 +140,21 @@ export interface GamesStore {
   recordSpin(spin: RouletteSpin): Promise<void>;
   markSpinPaid(id: string): Promise<void>;
 
-  insertMatch(match: VersusMatch): Promise<void>;
+  /** How many open matches the player has created. */
+  countOpenMatches(creatorId: string): Promise<number>;
+  /**
+   * Saves a new open match if its creator has fewer than `maxOpen` open
+   * matches. Otherwise saves it as cancelled with the refund owed, and
+   * returns false.
+   */
+  insertMatch(match: VersusMatch, maxOpen: number): Promise<boolean>;
   getMatch(id: string): Promise<VersusMatch | undefined>;
-  /** Matches waiting for a joiner, newest first, and the latest with a result, newest first. */
-  listMatches(limit: number): Promise<{ open: VersusMatch[]; recent: VersusMatch[] }>;
-  /** Takes the seat in an open match. Undefined if it is not open or is the joiner's own. */
-  claimJoin(id: string, joiner: Caller, joinerSeed: string): Promise<VersusMatch | undefined>;
+  /** Matches waiting for a joiner (not yet expired at `now`), newest first, and the latest with a result, newest first. */
+  listMatches(limit: number, now: number): Promise<{ open: VersusMatch[]; recent: VersusMatch[] }>;
+  /** Takes the seat in an open, unexpired match. Undefined if that is not possible or it is the joiner's own. */
+  claimJoin(id: string, joiner: Caller, joinerSeed: string, now: number): Promise<VersusMatch | undefined>;
+  /** Marks open matches past their expiry as expired, with the refund owed, and returns them. */
+  expireMatches(now: number): Promise<VersusMatch[]>;
   /** Gives the seat back after the joiner's stake could not be taken. */
   releaseJoin(id: string, joinerId: string): Promise<void>;
   /** Records the outcome of a match whose seat is taken; the prize is owed until `markSettled`. */
@@ -236,8 +247,14 @@ export class MemoryGamesStore implements GamesStore {
     }
   }
 
-  async insertMatch(match: VersusMatch) {
-    this.matches.set(match.id, copy(match));
+  async countOpenMatches(creatorId: string) {
+    return [...this.matches.values()].filter((m) => m.status === "open" && m.creator.id === creatorId).length;
+  }
+
+  async insertMatch(match: VersusMatch, maxOpen: number) {
+    const allowed = (await this.countOpenMatches(match.creator.id)) < maxOpen;
+    this.matches.set(match.id, allowed ? copy(match) : { ...copy(match), status: "cancelled", payoutDueSince: Date.now() });
+    return allowed;
   }
 
   async getMatch(id: string) {
@@ -245,9 +262,11 @@ export class MemoryGamesStore implements GamesStore {
     return match && copy(match);
   }
 
-  async listMatches(limit: number) {
+  async listMatches(limit: number, now: number) {
     const all = [...this.matches.values()];
-    const open = all.filter((m) => m.status === "open" || (m.status === "settling" && m.result === undefined)).reverse();
+    const open = all
+      .filter((m) => (m.status === "open" && m.expiresAt > now) || (m.status === "settling" && m.result === undefined))
+      .reverse();
     const recent = this.settledOrder
       .slice(-limit)
       .reverse()
@@ -255,9 +274,9 @@ export class MemoryGamesStore implements GamesStore {
     return { open: open.map(copy), recent: recent.map(copy) };
   }
 
-  async claimJoin(id: string, joiner: Caller, joinerSeed: string) {
+  async claimJoin(id: string, joiner: Caller, joinerSeed: string, now: number) {
     const match = this.matches.get(id);
-    if (!match || match.status !== "open" || match.creator.id === joiner.id) {
+    if (!match || match.status !== "open" || match.expiresAt <= now || match.creator.id === joiner.id) {
       return undefined;
     }
     Object.assign(match, { status: "settling", joiner, joinerSeed, joinedAt: Date.now() });
@@ -296,9 +315,17 @@ export class MemoryGamesStore implements GamesStore {
     return copy(match);
   }
 
+  async expireMatches(now: number) {
+    const expired = [...this.matches.values()].filter((m) => m.status === "open" && m.expiresAt <= now);
+    for (const match of expired) {
+      Object.assign(match, { status: "expired", payoutDueSince: Date.now() });
+    }
+    return expired.map(copy);
+  }
+
   async markRefunded(id: string) {
     const match = this.matches.get(id);
-    if (match?.status === "cancelled") {
+    if (match?.status === "cancelled" || match?.status === "expired") {
       match.payoutDueSince = undefined;
     }
   }
@@ -310,7 +337,7 @@ export class MemoryGamesStore implements GamesStore {
     return {
       spins: this.spins.filter((spin) => due(spin.payoutDueSince)).map(copy),
       prizes: matches.filter((m) => m.status === "settling" && due(m.payoutDueSince)).map(copy),
-      refunds: matches.filter((m) => m.status === "cancelled" && due(m.payoutDueSince)).map(copy),
+      refunds: matches.filter((m) => (m.status === "cancelled" || m.status === "expired") && due(m.payoutDueSince)).map(copy),
       stalledJoins: matches.filter((m) => m.status === "settling" && m.result === undefined && due(m.joinedAt)).map(copy),
     };
   }

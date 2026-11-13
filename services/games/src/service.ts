@@ -32,6 +32,10 @@ export interface GamesConfig {
   jackpotFeeBps: number;
   /** How long a jackpot round stays open once two players are in. */
   jackpotDurationMs: number;
+  /** How long a Versus match waits for a joiner before it expires and the creator is refunded. */
+  versusTtlMs: number;
+  /** Most open Versus matches one player may have at once. */
+  maxOpenVersusPerPlayer: number;
   now?: () => number;
 }
 
@@ -42,9 +46,14 @@ export const DEFAULT_GAMES_CONFIG: GamesConfig = {
   versusFeeBps: 200,
   jackpotFeeBps: 500,
   jackpotDurationMs: 30_000,
+  versusTtlMs: 30 * 60_000,
+  maxOpenVersusPerPlayer: 5,
 };
 
 type PayoutStatus = "none" | "paid" | "pending";
+
+const tooManyMatches = (max: number) =>
+  new GameError("TOO_MANY_OPEN_MATCHES", `You can have at most ${max} open matches. Cancel one or wait for a joiner.`);
 
 const CLIENT_SEED = /^[A-Za-z0-9_-]{1,64}$/;
 const HISTORY_LIMIT = 20;
@@ -92,6 +101,11 @@ export class GamesService {
     return service;
   }
 
+  /** The server's clock, sent with every timed response so clients can correct for their own. */
+  time(): number {
+    return this.now();
+  }
+
   describe() {
     return {
       currency: this.config.currency,
@@ -100,6 +114,8 @@ export class GamesService {
       versusFeeBps: this.config.versusFeeBps,
       jackpotFeeBps: this.config.jackpotFeeBps,
       jackpotDurationMs: this.config.jackpotDurationMs,
+      versusTtlMs: this.config.versusTtlMs,
+      maxOpenVersusPerPlayer: this.config.maxOpenVersusPerPlayer,
     };
   }
 
@@ -253,6 +269,7 @@ export class GamesService {
       creatorSide: match.creatorSide,
       serverSeedHash: match.serverSeedHash,
       createdAt: match.createdAt,
+      expiresAt: match.expiresAt,
       joiner: match.joiner,
       result: settled ? match.result : undefined,
       winner: settled ? match.winner : undefined,
@@ -265,7 +282,7 @@ export class GamesService {
   }
 
   async listVersus() {
-    const { open, recent } = await this.store.listMatches(HISTORY_LIMIT);
+    const { open, recent } = await this.store.listMatches(HISTORY_LIMIT, this.now());
     return {
       open: open.map((match) => this.versusView(match)),
       recent: recent.map((match) => this.versusView(match)),
@@ -278,6 +295,10 @@ export class GamesService {
       throw new GameError("INVALID_SIDE", "side must be heads or tails");
     }
     const creatorSeed = clientSeedFrom(input.clientSeed);
+    const max = this.config.maxOpenVersusPerPlayer;
+    if ((await this.store.countOpenMatches(user.id)) >= max) {
+      throw tooManyMatches(max);
+    }
 
     const id = randomUUID();
     const serverSeed = generateSeed();
@@ -302,8 +323,14 @@ export class GamesService {
       serverSeedHash,
       status: "open",
       createdAt: this.now(),
+      expiresAt: this.now() + this.config.versusTtlMs,
     };
-    await this.store.insertMatch(match);
+    if (!(await this.store.insertMatch(match, max))) {
+      // Another request opened a match at the same moment and reached the limit. The
+      // match was saved as cancelled with its refund owed; refund it now, or the retry will.
+      await this.refundVersus(match);
+      throw tooManyMatches(max);
+    }
     return this.versusView(match);
   }
 
@@ -313,7 +340,7 @@ export class GamesService {
     if (!match) {
       return new GameError("NOT_FOUND", "No such match");
     }
-    if (match.status !== "open") {
+    if (match.status !== "open" || match.expiresAt <= this.now()) {
       return new GameError("MATCH_CLOSED", "This match is no longer open");
     }
     if (action === "join" && match.creator.id === userId) {
@@ -329,7 +356,7 @@ export class GamesService {
     const joinerSeed = clientSeedFrom(input.clientSeed);
 
     // Claim the seat first, so a second joiner is turned away.
-    const match = await this.store.claimJoin(id, user, joinerSeed);
+    const match = await this.store.claimJoin(id, user, joinerSeed, this.now());
     if (!match) {
       throw await this.refusal(id, user.id, "join");
     }
@@ -417,6 +444,19 @@ export class GamesService {
     }
     const refunded = await this.refundVersus(match);
     return this.versusView({ ...match, payoutDueSince: refunded ? undefined : match.payoutDueSince });
+  }
+
+  /**
+   * Expires open matches nobody joined in time and refunds their creators.
+   * Safe to call often and from every instance; a failed refund is retried
+   * by `retryPayouts`.
+   */
+  async expireVersusMatches() {
+    const expired = await this.store.expireMatches(this.now());
+    for (const match of expired) {
+      await this.refundVersus(match);
+    }
+    return expired.length;
   }
 
   /** The side a joiner would be playing. */

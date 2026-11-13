@@ -54,3 +54,8 @@ setInterval(() => {
 setInterval(() => {
   service.retryPayouts().catch((error) => console.error("payout retry failed", error));
 }, 5000);
+
+// Expire Versus matches nobody joined in time and refund their creators.
+setInterval(() => {
+  service.expireVersusMatches().catch((error) => console.error("versus expiry failed", error));
+}, 5000);

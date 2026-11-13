@@ -179,6 +179,60 @@ function games(label: string, store: () => Promise<GamesStore>, skip: string | f
     await assert.rejects(service.joinVersus(cat, match.id, {}), { code: "MATCH_CLOSED" });
   });
 
+  test("versus: a match nobody joins expires and the creator is refunded", async () => {
+    const { wallet, service, advance } = await setup();
+    const match = await service.createVersus(ann, { amount: String(10n * USDT), side: "heads" });
+    assert.equal(match.expiresAt, match.createdAt + DEFAULT_GAMES_CONFIG.versusTtlMs);
+
+    advance(DEFAULT_GAMES_CONFIG.versusTtlMs - 1);
+    assert.equal(await service.expireVersusMatches(), 0);
+    assert.equal((await service.listVersus()).open.length, 1);
+
+    advance(1);
+    assert.equal((await service.listVersus()).open.length, 0, "hidden from the lobby as soon as it expires");
+    await assert.rejects(service.joinVersus(bob, match.id, {}), { code: "MATCH_CLOSED" });
+    assert.equal(wallet.balance(ann.id), 90n * USDT);
+
+    assert.equal(await service.expireVersusMatches(), 1);
+    assert.equal(wallet.balance(ann.id), 100n * USDT);
+    assert.equal(await service.expireVersusMatches(), 0);
+    assert.deepEqual(await service.retryPayouts({ minAgeMs: 0 }), { paid: 0, pending: 0 });
+    assert.equal(wallet.moves.filter((move) => move.kind === "refund").length, 1);
+  });
+
+  test("versus: a failed refund on expiry is retried", async () => {
+    const { wallet, service, advance } = await setup();
+    await service.createVersus(ann, { amount: String(10n * USDT), side: "heads" });
+    advance(DEFAULT_GAMES_CONFIG.versusTtlMs);
+    wallet.failNext = "refund";
+    assert.equal(await service.expireVersusMatches(), 1);
+    assert.equal(wallet.balance(ann.id), 90n * USDT);
+    assert.deepEqual(await service.retryPayouts({ minAgeMs: 0 }), { paid: 1, pending: 0 });
+    assert.equal(wallet.balance(ann.id), 100n * USDT);
+  });
+
+  test("versus: a player can have only so many open matches, even when creating them all at once", async () => {
+    const { wallet, service } = await setup({ maxOpenVersusPerPlayer: 3 });
+    const stake = { amount: String(USDT), side: "tails" };
+    const results = await Promise.allSettled(Array.from({ length: 8 }, () => service.createVersus(ann, stake)));
+    assert.equal(results.filter((r) => r.status === "fulfilled").length, 3);
+    assert.ok(
+      results.every((r) => r.status === "fulfilled" || (r.reason as { code: string }).code === "TOO_MANY_OPEN_MATCHES"),
+    );
+    // Every stake that was taken for a refused match was refunded.
+    assert.equal(wallet.balance(ann.id), 97n * USDT);
+    assert.equal((await service.listVersus()).open.length, 3);
+
+    const before = wallet.moves.length;
+    await assert.rejects(service.createVersus(ann, stake), { code: "TOO_MANY_OPEN_MATCHES" });
+    assert.equal(wallet.moves.length, before, "refused before any stake is taken");
+
+    const [first] = (await service.listVersus()).open;
+    await service.cancelVersus(ann, first!.id);
+    await service.createVersus(ann, stake);
+    await service.createVersus(bob, stake);
+  });
+
   test("jackpot: the timer starts with the second player and the draw can be verified", async () => {
     const { wallet, service, advance } = await setup();
     const first = await service.currentJackpot();
@@ -306,12 +360,12 @@ function games(label: string, store: () => Promise<GamesStore>, skip: string | f
   });
 
   test("payouts: a join interrupted after the seat was taken is finished, or undone if the joiner cannot pay", async () => {
-    const { wallet, service, store } = await setup();
+    const { wallet, service, store, config } = await setup();
     const first = await service.createVersus(ann, { amount: String(10n * USDT), side: "heads" });
     const second = await service.createVersus(ann, { amount: String(10n * USDT), side: "heads" });
     // As if the process stopped right after taking each seat.
-    await store.claimJoin(first.id, bob, "bob-seed");
-    await store.claimJoin(second.id, cat, "cat-seed");
+    await store.claimJoin(first.id, bob, "bob-seed", config.now());
+    await store.claimJoin(second.id, cat, "cat-seed", config.now());
     wallet.balances.set(cat.id, USDT);
 
     assert.deepEqual(await service.retryPayouts({ minAgeMs: 0 }), { paid: 1, pending: 0 });
