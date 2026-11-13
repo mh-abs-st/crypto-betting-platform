@@ -90,6 +90,8 @@ export interface RouletteSpin {
   color: "green" | "red" | "black";
   totalStake: string;
   totalPayout: string;
+  /** "pending" when the wallet has not yet confirmed the winnings; they are paid automatically. */
+  payoutStatus: "none" | "paid" | "pending";
   bets: Array<RouletteBetInput & { won: boolean; payout: string }>;
   fairness: SeedInfo;
 }
@@ -98,6 +100,8 @@ export interface VersusMatch {
   id: string;
   stake: string;
   status: "open" | "settled" | "cancelled";
+  /** A prize or refund is owed and will be paid automatically. */
+  payoutPending: boolean;
   creator: Caller;
   creatorSide: "heads" | "tails";
   serverSeedHash: string;

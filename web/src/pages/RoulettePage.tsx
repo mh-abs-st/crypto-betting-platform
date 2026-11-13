@@ -113,6 +113,9 @@ export function RoulettePage({ session, refreshBalance }: PageProps) {
             <p className={BigInt(latest.totalPayout) > 0n ? "win" : "muted"}>
               Staked {formatAmount(latest.totalStake)}, returned {formatAmount(latest.totalPayout)} {CURRENCY}
             </p>
+            {latest.payoutStatus === "pending" && (
+              <p className="muted">Your winnings are being paid and will reach your balance shortly.</p>
+            )}
             <ul className="list">
               {latest.bets.map((bet, index) => (
                 <li key={index}>

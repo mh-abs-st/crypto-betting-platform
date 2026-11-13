@@ -21,6 +21,8 @@ export interface RouletteSpin {
   number: number;
   totalStake: bigint;
   totalPayout: bigint;
+  /** Set while a winning spin's payout is not yet confirmed by the wallet. */
+  payoutDueSince?: number;
 }
 
 export type VersusStatus = "open" | "settling" | "settled" | "cancelled";
@@ -42,6 +44,10 @@ export interface VersusMatch {
   winner?: Caller;
   prize?: bigint;
   fee?: bigint;
+  /** When the seat was taken. */
+  joinedAt?: number;
+  /** Set while the prize (or, for a cancelled match, the refund) is not yet confirmed by the wallet. */
+  payoutDueSince?: number;
 }
 
 export interface VersusResult {
@@ -82,6 +88,18 @@ export interface JackpotResult {
   fee: bigint;
 }
 
+/** Money owed to players that the wallet has not yet confirmed. */
+export interface DuePayouts {
+  /** Winning spins whose payout is not confirmed. */
+  spins: RouletteSpin[];
+  /** Matches with a result whose prize is not confirmed. */
+  prizes: VersusMatch[];
+  /** Cancelled matches whose refund is not confirmed. */
+  refunds: VersusMatch[];
+  /** Matches whose seat was taken but no result recorded: the join was interrupted. */
+  stalledJoins: VersusMatch[];
+}
+
 export type NewJackpotRound = Pick<JackpotRound, "id" | "currency" | "serverSeed" | "serverSeedHash">;
 
 /**
@@ -106,21 +124,27 @@ export interface GamesStore {
    */
   rotateSeedPair(userId: string, previousId: string, next: SeedPair): Promise<SeedPair | undefined>;
 
+  /** Records a spin. If it won, its payout is owed until `markSpinPaid`. */
   recordSpin(spin: RouletteSpin): Promise<void>;
+  markSpinPaid(id: string): Promise<void>;
 
   insertMatch(match: VersusMatch): Promise<void>;
   getMatch(id: string): Promise<VersusMatch | undefined>;
-  /** Open matches, newest first, and the most recently settled ones, newest first. */
+  /** Matches waiting for a joiner, newest first, and the latest with a result, newest first. */
   listMatches(limit: number): Promise<{ open: VersusMatch[]; recent: VersusMatch[] }>;
   /** Takes the seat in an open match. Undefined if it is not open or is the joiner's own. */
   claimJoin(id: string, joiner: Caller, joinerSeed: string): Promise<VersusMatch | undefined>;
   /** Gives the seat back after the joiner's stake could not be taken. */
   releaseJoin(id: string, joinerId: string): Promise<void>;
-  /** Records the outcome of a match whose seat is taken. Does not change its status. */
+  /** Records the outcome of a match whose seat is taken; the prize is owed until `markSettled`. */
   recordVersusResult(id: string, result: VersusResult): Promise<void>;
+  /** The prize is paid: the match is settled. */
   markSettled(id: string): Promise<void>;
-  /** Cancels an open match created by `creatorId`. Undefined if that is not possible. */
+  /** Cancels an open match created by `creatorId`; the refund is owed until `markRefunded`. */
   cancelMatch(id: string, creatorId: string): Promise<VersusMatch | undefined>;
+  markRefunded(id: string): Promise<void>;
+  /** Everything owed for at least `minAgeMs`, and joins interrupted at least that long ago. */
+  duePayouts(minAgeMs: number): Promise<DuePayouts>;
 
   /** The round that is not yet settled, if there is one. */
   currentRound(): Promise<JackpotRound | undefined>;
@@ -190,7 +214,14 @@ export class MemoryGamesStore implements GamesStore {
   }
 
   async recordSpin(spin: RouletteSpin) {
-    this.spins.push(copy(spin));
+    this.spins.push({ ...copy(spin), payoutDueSince: spin.totalPayout > 0n ? Date.now() : undefined });
+  }
+
+  async markSpinPaid(id: string) {
+    const spin = this.spins.find((s) => s.id === id);
+    if (spin) {
+      spin.payoutDueSince = undefined;
+    }
   }
 
   async insertMatch(match: VersusMatch) {
@@ -204,7 +235,7 @@ export class MemoryGamesStore implements GamesStore {
 
   async listMatches(limit: number) {
     const all = [...this.matches.values()];
-    const open = all.filter((m) => m.status === "open" || m.status === "settling").reverse();
+    const open = all.filter((m) => m.status === "open" || (m.status === "settling" && m.result === undefined)).reverse();
     const recent = this.settledOrder
       .slice(-limit)
       .reverse()
@@ -217,26 +248,30 @@ export class MemoryGamesStore implements GamesStore {
     if (!match || match.status !== "open" || match.creator.id === joiner.id) {
       return undefined;
     }
-    Object.assign(match, { status: "settling", joiner, joinerSeed });
+    Object.assign(match, { status: "settling", joiner, joinerSeed, joinedAt: Date.now() });
     return copy(match);
   }
 
   async releaseJoin(id: string, joinerId: string) {
     const match = this.matches.get(id);
     if (match?.status === "settling" && match.joiner?.id === joinerId && match.result === undefined) {
-      Object.assign(match, { status: "open", joiner: undefined, joinerSeed: undefined });
+      Object.assign(match, { status: "open", joiner: undefined, joinerSeed: undefined, joinedAt: undefined });
     }
   }
 
   async recordVersusResult(id: string, result: VersusResult) {
-    Object.assign(this.matches.get(id)!, result);
+    const match = this.matches.get(id)!;
+    if (match.status === "settling" && match.result === undefined) {
+      Object.assign(match, result, { payoutDueSince: Date.now() });
+      // Listed with the results from now on, even while the prize is being paid.
+      this.settledOrder.push(id);
+    }
   }
 
   async markSettled(id: string) {
     const match = this.matches.get(id)!;
-    if (match.status !== "settled") {
-      match.status = "settled";
-      this.settledOrder.push(id);
+    if (match.status === "settling" && match.result !== undefined) {
+      Object.assign(match, { status: "settled", payoutDueSince: undefined });
     }
   }
 
@@ -245,8 +280,27 @@ export class MemoryGamesStore implements GamesStore {
     if (!match || match.status !== "open" || match.creator.id !== creatorId) {
       return undefined;
     }
-    match.status = "cancelled";
+    Object.assign(match, { status: "cancelled", payoutDueSince: Date.now() });
     return copy(match);
+  }
+
+  async markRefunded(id: string) {
+    const match = this.matches.get(id);
+    if (match?.status === "cancelled") {
+      match.payoutDueSince = undefined;
+    }
+  }
+
+  async duePayouts(minAgeMs: number) {
+    const cutoff = Date.now() - minAgeMs;
+    const due = (since?: number) => since !== undefined && since <= cutoff;
+    const matches = [...this.matches.values()];
+    return {
+      spins: this.spins.filter((spin) => due(spin.payoutDueSince)).map(copy),
+      prizes: matches.filter((m) => m.status === "settling" && due(m.payoutDueSince)).map(copy),
+      refunds: matches.filter((m) => m.status === "cancelled" && due(m.payoutDueSince)).map(copy),
+      stalledJoins: matches.filter((m) => m.status === "settling" && m.result === undefined && due(m.joinedAt)).map(copy),
+    };
   }
 
   private current() {
