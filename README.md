@@ -1,5 +1,7 @@
 # YuuBet
 
+[![CI](https://github.com/mh-abs-st/crypto-betting-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/mh-abs-st/crypto-betting-platform/actions/workflows/ci.yml)
+
 A cryptocurrency betting platform built around provably fair games.
 
 **Status: early development build.** Three games are playable with play money: Roulette, Versus and Jackpot. There are no real deposits or withdrawals yet. All state is kept in PostgreSQL when `DATABASE_URL` is set; without it, the services hold state in memory and lose it on restart.

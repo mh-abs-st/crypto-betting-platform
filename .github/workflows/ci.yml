@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Type-check, lint and test
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: yuubet
+          POSTGRES_PASSWORD: yuubet
+          POSTGRES_DB: yuubet
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U yuubet"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://yuubet:yuubet@localhost:5432/yuubet
+      TEST_DATABASE_URL: postgres://yuubet:yuubet@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - name: Type-check
+        run: npm run typecheck
+      - name: Lint
+        run: npm run lint
+      - name: Formatting
+        run: npm run format:check
+      - name: Migrations apply to an empty database, and again with nothing to do
+        run: npm run db:migrate && npm run db:migrate
+      - name: Test, including PostgreSQL
+        run: npm test
+
+  web:
+    name: Build the web client
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - run: npm --prefix web install --no-audit --no-fund
+      - run: npm --prefix web run build
+
+  security:
+    name: Dependency and secret scanning
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Known vulnerabilities in runtime dependencies
+        run: |
+          npm install --package-lock-only --no-audit --no-fund
+          npm audit --omit=dev --audit-level=high
+          npm --prefix web install --package-lock-only --no-audit --no-fund
+          npm --prefix web audit --omit=dev --audit-level=high
+      - name: Secrets in the repository
+        uses: trufflesecurity/trufflehog@v3.88.0
+        with:
+          extra_args: --results=verified,unknown
