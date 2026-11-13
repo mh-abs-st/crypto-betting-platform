@@ -1,13 +1,13 @@
 import { timingSafeEqual } from "node:crypto";
-import {
-  createServer,
-  type IncomingHttpHeaders,
-  type IncomingMessage,
-  type Server,
-  type ServerResponse,
-} from "node:http";
+import type { IncomingHttpHeaders, Server } from "node:http";
+import cors from "@fastify/cors";
+import swagger from "@fastify/swagger";
+import Fastify, { type FastifyError, type FastifyInstance, type FastifyRequest, type FastifySchema } from "fastify";
 
 const MAX_BODY_BYTES = 64 * 1024;
+const ALL_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
+/** Paths every service answers without the internal key. */
+const PUBLIC_PATHS = new Set(["/health", "/openapi.json"]);
 
 /** An error with an HTTP status and a stable code the client can act on. */
 export class HttpError extends Error {
@@ -41,10 +41,18 @@ export interface RequestContext {
 export type Handler = (ctx: RequestContext) => unknown | Promise<unknown>;
 export type ErrorMapper = (error: unknown) => HttpError | undefined;
 
+/**
+ * JSON schemas for a route, as in Fastify. Requests are rejected with
+ * 400 INVALID_REQUEST unless they match `body`, `params` and `querystring`.
+ * `response` documents the replies; it does not filter them.
+ */
+export type RouteSchema = FastifySchema & { summary?: string; description?: string; tags?: string[] };
+
 interface Route {
   method: string;
-  segments: string[];
+  pattern: string;
   handler: Handler;
+  schema?: RouteSchema;
 }
 
 export interface RouterOptions {
@@ -52,17 +60,51 @@ export interface RouterOptions {
   corsOrigin?: string;
   /** Receives unexpected errors. Defaults to console.error. */
   logError?: (error: unknown) => void;
+  /**
+   * When set, every request except /health and /openapi.json must carry this
+   * key in x-internal-key. It is checked before the body is validated.
+   */
+  internalKey?: string;
+  /** Title of the generated API description. */
+  title?: string;
 }
 
-function splitPath(path: string): string[] {
-  return path.split("/").filter((segment) => segment.length > 0);
+/** Amounts are bigint inside the services and decimal strings on the wire. */
+function toJson(value: unknown): string {
+  return JSON.stringify(value, (_key, item) => (typeof item === "bigint" ? item.toString() : item));
+}
+
+function errorBody(error: HttpError) {
+  return { error: { code: error.code, message: error.message } };
+}
+
+function matchesPattern(pattern: string, path: string): boolean {
+  const expected = pattern.split("/").filter(Boolean);
+  const actual = path.split("/").filter(Boolean);
+  for (let i = 0; i < expected.length; i++) {
+    if (expected[i] === "*" && i === expected.length - 1) {
+      return true;
+    }
+    if (actual[i] === undefined || (!expected[i]!.startsWith(":") && expected[i] !== actual[i])) {
+      return false;
+    }
+  }
+  return actual.length === expected.length;
+}
+
+function sameKey(given: string | undefined, expected: string): boolean {
+  const a = Buffer.from(given ?? "");
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
 }
 
 /**
- * A small JSON-over-HTTP router on node:http, with no dependencies.
+ * JSON over HTTP on Fastify, with the error format { error: { code, message } }.
  *
  * Patterns may contain ":name" segments and may end in "*", which captures
- * the rest of the path as params["*"]. Method "*" matches any method.
+ * the rest of the path as params["*"]. Method "*" matches any method. Each
+ * route may declare JSON schemas; they validate requests and are published
+ * as an OpenAPI description at /openapi.json.
  */
 export class Router {
   private readonly routes: Route[] = [];
@@ -70,17 +112,17 @@ export class Router {
 
   constructor(private readonly options: RouterOptions = {}) {}
 
-  add(method: string, pattern: string, handler: Handler): this {
-    this.routes.push({ method: method.toUpperCase(), segments: splitPath(pattern), handler });
+  add(method: string, pattern: string, handler: Handler, schema?: RouteSchema): this {
+    this.routes.push({ method: method.toUpperCase(), pattern, handler, schema });
     return this;
   }
 
-  get(pattern: string, handler: Handler): this {
-    return this.add("GET", pattern, handler);
+  get(pattern: string, handler: Handler, schema?: RouteSchema): this {
+    return this.add("GET", pattern, handler, schema);
   }
 
-  post(pattern: string, handler: Handler): this {
-    return this.add("POST", pattern, handler);
+  post(pattern: string, handler: Handler, schema?: RouteSchema): this {
+    return this.add("POST", pattern, handler, schema);
   }
 
   /** Lets a service turn its own error types into HTTP errors. */
@@ -89,105 +131,110 @@ export class Router {
     return this;
   }
 
-  listen(port: number, host = "0.0.0.0"): Promise<Server> {
-    const server = createServer((req, res) => void this.handle(req, res));
-    return new Promise((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(port, host, () => resolve(server));
+  /** Builds the Fastify app with every route. */
+  async build(): Promise<FastifyInstance> {
+    const app = Fastify({
+      bodyLimit: MAX_BODY_BYTES,
+      logger: false,
+      // Reject what does not match; never convert "5" to 5 or drop unknown fields silently.
+      ajv: { customOptions: { coerceTypes: false, removeAdditional: false, allErrors: false } },
     });
-  }
 
-  private match(
-    method: string,
-    path: string,
-  ): { route: Route; params: Record<string, string> } | "wrong-method" | undefined {
-    const actual = splitPath(path);
-    let pathMatched = false;
-
-    for (const route of this.routes) {
-      const params: Record<string, string> = {};
-      let matched = true;
-
-      for (let i = 0; i < route.segments.length; i++) {
-        const expected = route.segments[i]!;
-        if (expected === "*" && i === route.segments.length - 1) {
-          params["*"] = actual.slice(i).join("/");
-          break;
-        }
-        const given = actual[i];
-        if (given === undefined) {
-          matched = false;
-          break;
-        }
-        if (expected.startsWith(":")) {
-          params[expected.slice(1)] = decodeURIComponent(given);
-        } else if (expected !== given) {
-          matched = false;
-          break;
-        }
-      }
-
-      const wildcard = route.segments.at(-1) === "*";
-      if (!matched || (!wildcard && actual.length !== route.segments.length)) {
-        continue;
-      }
-      if (route.method === method || route.method === "*") {
-        return { route, params };
-      }
-      pathMatched = true;
-    }
-
-    return pathMatched ? "wrong-method" : undefined;
-  }
-
-  private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const origin = this.options.corsOrigin;
-    if (origin) {
-      res.setHeader("Access-Control-Allow-Origin", origin);
-      res.setHeader("Vary", "Origin");
-      res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-      res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    }
-
-    try {
-      const method = (req.method ?? "GET").toUpperCase();
-      if (origin && method === "OPTIONS") {
-        res.writeHead(204).end();
+    // Every body is JSON, whatever the content type says; an empty body is no body.
+    app.removeAllContentTypeParsers();
+    app.addContentTypeParser("*", { parseAs: "string" }, (_request, text, done) => {
+      if (text === "") {
+        done(null, undefined);
         return;
       }
-
-      const url = new URL(req.url ?? "/", "http://internal");
-      const found = this.match(method, url.pathname);
-      if (found === undefined) {
-        throw new HttpError(404, "NOT_FOUND", "No such endpoint");
+      try {
+        done(null, JSON.parse(text as string));
+      } catch {
+        done(new HttpError(400, "INVALID_JSON", "Request body is not valid JSON"), undefined);
       }
-      if (found === "wrong-method") {
-        throw new HttpError(405, "METHOD_NOT_ALLOWED", "Method not allowed for this endpoint");
-      }
+    });
 
-      const result = await found.route.handler({
-        method,
-        path: url.pathname,
-        params: found.params,
-        query: url.searchParams,
-        headers: req.headers,
-        body: await readJsonBody(req),
-      });
-
-      if (result instanceof Reply) {
-        send(res, result.status, result.body);
-      } else {
-        send(res, 200, result ?? {});
+    // A POST without a body is checked as an empty object.
+    app.addHook("preValidation", async (request) => {
+      if (request.body === undefined && request.method !== "GET") {
+        request.body = {};
       }
-    } catch (error) {
+    });
+
+    // Response schemas describe replies; they never strip or reshape them.
+    app.setSerializerCompiler(() => (data) => toJson(data));
+    app.setReplySerializer((payload) => toJson(payload));
+
+    app.setErrorHandler((error, _request, reply) => {
       const known = this.toHttpError(error);
       if (known) {
-        send(res, known.status, { error: { code: known.code, message: known.message } });
-      } else {
-        (this.options.logError ?? console.error)(error);
-        send(res, 500, { error: { code: "INTERNAL", message: "Something went wrong" } });
+        return reply.code(known.status).send(errorBody(known));
       }
+      (this.options.logError ?? console.error)(error);
+      return reply.code(500).send(errorBody(new HttpError(500, "INTERNAL", "Something went wrong")));
+    });
+
+    app.setNotFoundHandler((request, reply) => {
+      const path = new URL(request.url, "http://internal").pathname;
+      const error = this.routes.some((route) => matchesPattern(route.pattern, path))
+        ? new HttpError(405, "METHOD_NOT_ALLOWED", "Method not allowed for this endpoint")
+        : new HttpError(404, "NOT_FOUND", "No such endpoint");
+      return reply.code(error.status).send(errorBody(error));
+    });
+
+    const internalKey = this.options.internalKey;
+    if (internalKey) {
+      app.addHook("onRequest", async (request) => {
+        const path = new URL(request.url, "http://internal").pathname;
+        const given = request.headers["x-internal-key"];
+        if (!PUBLIC_PATHS.has(path) && !sameKey(Array.isArray(given) ? given[0] : given, internalKey)) {
+          throw new HttpError(401, "UNAUTHORIZED", "This endpoint is for internal services only");
+        }
+      });
     }
+
+    if (this.options.corsOrigin) {
+      await app.register(cors, {
+        origin: this.options.corsOrigin,
+        methods: ["GET", "POST", "OPTIONS"],
+        allowedHeaders: ["Content-Type", "Authorization"],
+      });
+    }
+    await app.register(swagger, {
+      openapi: { info: { title: this.options.title ?? "YuuBet service", version: "0.1.0" } },
+    });
+    app.get("/openapi.json", { schema: { hide: true } as RouteSchema }, async () => app.swagger());
+
+    for (const route of this.routes) {
+      app.route({
+        method: route.method === "*" ? [...ALL_METHODS] : route.method,
+        url: route.pattern,
+        schema: route.schema,
+        handler: async (request, reply) => {
+          const result = await route.handler(contextOf(request));
+          if (result instanceof Reply) {
+            return reply.code(result.status).send(result.body ?? {});
+          }
+          return result ?? {};
+        },
+      });
+    }
+    return app;
+  }
+
+  async listen(port: number, host = "0.0.0.0"): Promise<Server> {
+    const app = await this.build();
+    await app.listen({ port, host });
+    return app.server;
+  }
+
+  /** The OpenAPI description of this router's routes. */
+  async openapi(): Promise<unknown> {
+    const app = await this.build();
+    await app.ready();
+    const document = app.swagger();
+    await app.close();
+    return document;
   }
 
   private toHttpError(error: unknown): HttpError | undefined {
@@ -200,35 +247,31 @@ export class Router {
         return mapped;
       }
     }
-    return undefined;
-  }
-}
-
-function send(res: ServerResponse, status: number, body: unknown): void {
-  // Amounts are bigint inside the services and decimal strings on the wire.
-  const text = JSON.stringify(body, (_key, value) => (typeof value === "bigint" ? value.toString() : value));
-  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
-  res.end(text);
-}
-
-async function readJsonBody(req: IncomingMessage): Promise<unknown> {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of req) {
-    size += (chunk as Buffer).length;
-    if (size > MAX_BODY_BYTES) {
-      throw new HttpError(413, "BODY_TOO_LARGE", "Request body is too large");
+    const fastifyError = error as Partial<FastifyError>;
+    if (fastifyError.validation) {
+      return new HttpError(400, "INVALID_REQUEST", `Invalid ${fastifyError.validationContext ?? "request"}: ${fastifyError.message}`);
     }
-    chunks.push(chunk as Buffer);
-  }
-  if (size === 0) {
+    if (fastifyError.code === "FST_ERR_CTP_BODY_TOO_LARGE") {
+      return new HttpError(413, "BODY_TOO_LARGE", "Request body is too large");
+    }
+    const status = fastifyError.statusCode;
+    if (status !== undefined && status >= 400 && status < 500) {
+      return new HttpError(status, "BAD_REQUEST", fastifyError.message ?? "Bad request");
+    }
     return undefined;
   }
-  try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
-  } catch {
-    throw new HttpError(400, "INVALID_JSON", "Request body is not valid JSON");
-  }
+}
+
+function contextOf(request: FastifyRequest): RequestContext {
+  const url = new URL(request.url, "http://internal");
+  return {
+    method: request.method,
+    path: url.pathname,
+    params: (request.params ?? {}) as Record<string, string>,
+    query: url.searchParams,
+    headers: request.headers,
+    body: request.body,
+  };
 }
 
 function header(ctx: RequestContext, name: string): string | undefined {

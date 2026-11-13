@@ -18,5 +18,5 @@
       "@yuubet/service-kit": ["./packages/service-kit/src/index.ts"]
     }
   },
-  "include": ["packages", "services", "tests"]
+  "include": ["packages", "services", "tests", "scripts"]
 }

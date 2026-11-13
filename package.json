@@ -18,9 +18,13 @@
     "db:migrate": "tsx packages/db/src/cli.ts",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "docs:api": "tsx scripts/openapi.ts"
   },
   "dependencies": {
+    "@fastify/cors": "^10.0.2",
+    "@fastify/swagger": "^9.4.2",
+    "fastify": "^5.2.1",
     "pg": "^8.13.1"
   },
   "devDependencies": {
