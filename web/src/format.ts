@@ -1,5 +1,10 @@
 /** Converts between what a player types ("12.5") and smallest units ("12500000"). */
 
+/** A link to the block a Jackpot draw used, or undefined for a simulated chain. */
+export function blockUrl(entropy: { source: string; height: number }): string | undefined {
+  return entropy.source === "ethereum" ? `https://etherscan.io/block/${entropy.height}` : undefined;
+}
+
 export const DECIMALS = 6;
 export const CURRENCY = "USDT";
 

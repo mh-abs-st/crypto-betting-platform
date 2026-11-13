@@ -7,6 +7,7 @@ import { GameError, pickJackpotWinner, settleRoulette } from "@yuubet/games";
 import { DEFAULT_GAMES_CONFIG, GamesService } from "./service";
 import { PgGamesStore } from "./pg-store";
 import { MemoryGamesStore, type GamesStore } from "./store";
+import { BLOCKS_AHEAD, SimulatedChain, type EntropySource } from "./entropy";
 import { FakeWallet } from "./fake-wallet";
 
 const player = (name: string) => ({ id: randomUUID(), name });
@@ -17,7 +18,7 @@ const USDT = 1_000_000n;
 
 let makeStore: () => Promise<GamesStore> = async () => new MemoryGamesStore();
 
-async function setup(overrides = {}) {
+async function setup(overrides = {}, entropy?: EntropySource) {
   [ann, bob, cat] = [player("ann"), player("bob"), player("cat")];
   const wallet = new FakeWallet();
   for (const user of [ann, bob, cat]) {
@@ -26,7 +27,7 @@ async function setup(overrides = {}) {
   let clock = 1_000_000;
   const config = { ...DEFAULT_GAMES_CONFIG, now: () => clock, ...overrides };
   const store = await makeStore();
-  const service = await GamesService.create(wallet, config, store);
+  const service = await GamesService.create(wallet, config, store, entropy);
   return { wallet, service, store, config, advance: (ms: number) => (clock += ms) };
 }
 
@@ -342,6 +343,39 @@ function games(label: string, store: () => Promise<GamesStore>, skip: string | f
     assert.equal((await service.currentJackpot()).entries.length, 0);
     assert.equal((await service.seedInfo(ann.id)).nonce, 0);
     assert.deepEqual(await service.retryPayouts({ minAgeMs: 0 }), { paid: 0, pending: 0 });
+  });
+
+  test("jackpot: the draw waits for a block that did not exist when entries closed", async () => {
+    const chain = new SimulatedChain({ confirmations: 2 });
+    const { wallet, service, advance } = await setup({}, chain);
+    chain.mine(10);
+    await service.enterJackpot(ann, { amount: String(USDT) });
+    await service.enterJackpot(bob, { amount: String(3n * USDT) });
+    advance(DEFAULT_GAMES_CONFIG.jackpotDurationMs);
+
+    const tipAtClose = await chain.tip();
+    assert.equal(await service.drawJackpotIfDue(), undefined, "the committed block does not exist yet");
+    const waiting = await service.currentJackpot();
+    assert.equal(waiting.status, "drawing");
+    assert.deepEqual(waiting.entropy, { source: "simulated", height: tipAtClose + BLOCKS_AHEAD, hash: undefined });
+    assert.ok(waiting.entropy!.height > tipAtClose);
+    await assert.rejects(service.enterJackpot(cat, { amount: String(USDT) }), { code: "ROUND_CLOSING" });
+
+    // New blocks do not move the commitment.
+    chain.mine(BLOCKS_AHEAD);
+    assert.equal(await service.drawJackpotIfDue(), undefined, "not enough confirmations yet");
+    assert.equal((await service.currentJackpot()).entropy!.height, tipAtClose + BLOCKS_AHEAD);
+    assert.equal(wallet.moves.filter((move) => move.kind === "win").length, 0);
+
+    chain.mine(2);
+    const settled = (await service.drawJackpotIfDue())!;
+    const blockHash = (await chain.settledHash(waiting.entropy!.height))!;
+    assert.equal(settled.entropy!.hash, blockHash);
+    assert.equal(settled.clientSeed, `${settled.id}:2:${4n * USDT}:${blockHash}`);
+    const ticket = await fairInt({ serverSeed: settled.serverSeed!, clientSeed: settled.clientSeed!, nonce: 0 }, settled.pot);
+    assert.equal(settled.winningTicket, ticket);
+    assert.equal((await service.listJackpotHistory()).rounds[0]!.entropy!.hash, blockHash);
+    assert.equal(wallet.moves.filter((move) => move.kind === "win").length, 1);
   });
 
   test("jackpot: stake share decides the winner over many rounds", async () => {

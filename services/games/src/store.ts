@@ -64,6 +64,14 @@ export interface JackpotEntry {
   amount: bigint;
 }
 
+/** The block a round's draw depends on. */
+export interface EntropyCommitment {
+  source: string;
+  height: number;
+  /** Known once the draw has used it. */
+  hash?: string;
+}
+
 export interface JackpotRound {
   id: string;
   number: number;
@@ -73,6 +81,7 @@ export interface JackpotRound {
   status: JackpotStatus;
   entries: JackpotEntry[];
   closesAt?: number;
+  entropy?: EntropyCommitment;
   clientSeed?: string;
   winningTicket?: bigint;
   winner?: Caller;
@@ -82,6 +91,7 @@ export interface JackpotRound {
 
 export interface JackpotResult {
   clientSeed: string;
+  entropyHash: string;
   winningTicket: bigint;
   winner: Caller;
   prize: bigint;
@@ -156,10 +166,12 @@ export interface GamesStore {
    */
   addEntry(roundId: string, entry: JackpotEntry, now: number, durationMs: number): Promise<JackpotRound | undefined>;
   /**
-   * Stops entries to a round that is due, and returns it for drawing. A round
-   * already being drawn is returned again, so an interrupted draw is finished.
+   * Stops entries to a round that is due, commits it to the block in
+   * `commitment`, and returns it for drawing. A round already being drawn is
+   * returned again with its original commitment, so an interrupted or waiting
+   * draw is finished.
    */
-  claimDraw(roundId: string, now: number): Promise<JackpotRound | undefined>;
+  claimDraw(roundId: string, now: number, commitment: EntropyCommitment): Promise<JackpotRound | undefined>;
   recordJackpotResult(roundId: string, result: JackpotResult): Promise<void>;
   /** Marks a round being drawn as settled. False if another caller already did. */
   settleRound(roundId: string): Promise<boolean>;
@@ -332,19 +344,21 @@ export class MemoryGamesStore implements GamesStore {
     return copy(round);
   }
 
-  async claimDraw(roundId: string, now: number) {
+  async claimDraw(roundId: string, now: number, commitment: EntropyCommitment) {
     const round = this.rounds.find((r) => r.id === roundId);
     if (!round) {
       return undefined;
     }
     if (round.status === "open" && round.closesAt !== undefined && now >= round.closesAt) {
       round.status = "drawing";
+      round.entropy = { source: commitment.source, height: commitment.height };
     }
     return round.status === "drawing" ? copy(round) : undefined;
   }
 
-  async recordJackpotResult(roundId: string, result: JackpotResult) {
-    Object.assign(this.rounds.find((r) => r.id === roundId)!, result);
+  async recordJackpotResult(roundId: string, { entropyHash, ...result }: JackpotResult) {
+    const round = this.rounds.find((r) => r.id === roundId)!;
+    Object.assign(round, result, { entropy: { ...round.entropy!, hash: entropyHash } });
   }
 
   async settleRound(roundId: string) {

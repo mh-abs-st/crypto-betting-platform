@@ -3,6 +3,7 @@ import type { RouletteBet, Side } from "@yuubet/games";
 import type { Caller } from "@yuubet/service-kit";
 import type {
   DuePayouts,
+  EntropyCommitment,
   GamesStore,
   JackpotEntry,
   JackpotResult,
@@ -121,6 +122,9 @@ interface RoundRow {
   server_seed_hash: string;
   client_seed: string | null;
   closes_at: Date | null;
+  entropy_source: string | null;
+  entropy_height: string | null;
+  entropy_hash: string | null;
   winning_ticket: string | null;
   winner_id: string | null;
   prize: string | null;
@@ -367,6 +371,10 @@ export class PgGamesStore implements GamesStore {
         serverSeedHash: row.server_seed_hash,
         entries: mine,
         closesAt: row.closes_at?.getTime(),
+        entropy:
+          row.entropy_source === null
+            ? undefined
+            : { source: row.entropy_source, height: Number(row.entropy_height), hash: row.entropy_hash ?? undefined },
         clientSeed: row.client_seed ?? undefined,
         winningTicket: row.winning_ticket === null ? undefined : BigInt(row.winning_ticket),
         winner: row.winner_id ? mine.find((entry) => entry.user.id === row.winner_id)?.user : undefined,
@@ -422,20 +430,33 @@ export class PgGamesStore implements GamesStore {
     });
   }
 
-  async claimDraw(roundId: string, now: number) {
+  async claimDraw(roundId: string, now: number, commitment: EntropyCommitment) {
+    // A round already being drawn keeps the block it committed to first.
     const { rowCount } = await this.pool.query(
-      `UPDATE games.jackpot_rounds SET status = 'drawing'
+      `UPDATE games.jackpot_rounds
+       SET status = 'drawing',
+           entropy_source = coalesce(entropy_source, $3),
+           entropy_height = coalesce(entropy_height, $4)
        WHERE id = $1 AND (status = 'drawing' OR (status = 'open' AND closes_at <= $2))`,
-      [roundId, new Date(now)],
+      [roundId, new Date(now), commitment.source, commitment.height],
     );
     return rowCount ? (await this.rounds(this.pool, "id = $1", [roundId]))[0] : undefined;
   }
 
   async recordJackpotResult(roundId: string, result: JackpotResult) {
     await this.pool.query(
-      `UPDATE games.jackpot_rounds SET client_seed = $2, winning_ticket = $3, winner_id = $4, prize = $5, fee = $6
+      `UPDATE games.jackpot_rounds
+       SET client_seed = $2, winning_ticket = $3, winner_id = $4, prize = $5, fee = $6, entropy_hash = $7
        WHERE id = $1 AND status = 'drawing'`,
-      [roundId, result.clientSeed, result.winningTicket.toString(), result.winner.id, result.prize.toString(), result.fee.toString()],
+      [
+        roundId,
+        result.clientSeed,
+        result.winningTicket.toString(),
+        result.winner.id,
+        result.prize.toString(),
+        result.fee.toString(),
+        result.entropyHash,
+      ],
     );
   }
 
