@@ -33,14 +33,22 @@ function contract(label: string, make: () => UserStore, skip: string | false = f
       const username = name();
       const results = await Promise.allSettled(Array.from({ length: 5 }, () => users.register(username, PASSWORD)));
       assert.equal(results.filter((r) => r.status === "fulfilled").length, 1);
-      assert.ok(results.every((r) => r.status === "fulfilled" || (r.reason as { code: string }).code === "USERNAME_TAKEN"));
+      assert.ok(
+        results.every((r) => r.status === "fulfilled" || (r.reason as { code: string }).code === "USERNAME_TAKEN"),
+      );
     });
 
     test("wrong password, unknown user and bad input are the same failure", async () => {
       const users = make();
       const username = name();
       await users.register(username, PASSWORD);
-      for (const [u, p] of [[username, "wrong password"], [name(), PASSWORD], [username, 42], [null, PASSWORD], ["x".repeat(200), PASSWORD]]) {
+      for (const [u, p] of [
+        [username, "wrong password"],
+        [name(), PASSWORD],
+        [username, 42],
+        [null, PASSWORD],
+        ["x".repeat(200), PASSWORD],
+      ]) {
         await assert.rejects(users.verify(u, p), { code: "INVALID_CREDENTIALS" });
       }
     });
@@ -89,7 +97,10 @@ describe("PgUserStore storage", { skip: skipWithoutDatabase }, () => {
     } finally {
       await fresh.end();
     }
-    const { rows } = await db.pool.query("SELECT password_params, octet_length(password_salt) AS salt FROM auth.users WHERE id = $1", [created.id]);
+    const { rows } = await db.pool.query(
+      "SELECT password_params, octet_length(password_salt) AS salt FROM auth.users WHERE id = $1",
+      [created.id],
+    );
     assert.deepEqual(rows[0], { password_params: "scrypt:N=16384,r=8,p=1,len=64", salt: 16 });
   });
 

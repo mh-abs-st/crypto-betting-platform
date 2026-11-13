@@ -15,7 +15,12 @@ function sign(data: string, secret: string): Buffer {
 }
 
 /** Issues a JWT signed with HMAC-SHA256. */
-export function signToken(user: { id: string; username: string }, secret: string, ttlSeconds: number, now = Date.now()): string {
+export function signToken(
+  user: { id: string; username: string },
+  secret: string,
+  ttlSeconds: number,
+  now = Date.now(),
+): string {
   const claims: TokenClaims = { sub: user.id, username: user.username, exp: Math.floor(now / 1000) + ttlSeconds };
   const payload = Buffer.from(JSON.stringify(claims)).toString("base64url");
   const data = `${HEADER}.${payload}`;

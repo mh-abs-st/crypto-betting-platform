@@ -42,12 +42,16 @@ function contract(name: string, make: () => Promise<LedgerStore>, skip: string |
     test("a balance cannot go below zero", async () => {
       ledger = await make();
       await ledger.apply(tx({ userId: bob, amount: 100n }));
-      await assert.rejects(ledger.apply(tx({ userId: bob, amount: -101n, kind: "bet" })), { code: "INSUFFICIENT_FUNDS" });
+      await assert.rejects(ledger.apply(tx({ userId: bob, amount: -101n, kind: "bet" })), {
+        code: "INSUFFICIENT_FUNDS",
+      });
       assert.equal(await ledger.balance(bob, "USDT"), 100n);
       await ledger.apply(tx({ userId: bob, amount: -100n, kind: "bet" }));
       assert.equal(await ledger.balance(bob, "USDT"), 0n);
       const stranger = randomUUID();
-      await assert.rejects(ledger.apply(tx({ userId: stranger, amount: -1n, kind: "bet" })), { code: "INSUFFICIENT_FUNDS" });
+      await assert.rejects(ledger.apply(tx({ userId: stranger, amount: -1n, kind: "bet" })), {
+        code: "INSUFFICIENT_FUNDS",
+      });
     });
 
     test("repeating a transaction id applies it once", async () => {
@@ -78,8 +82,14 @@ function contract(name: string, make: () => Promise<LedgerStore>, skip: string |
       await ledger.apply(tx({ id: `${user}-b`, userId: user, amount: -40n, kind: "bet" }));
       await ledger.apply(tx({ id: `${user}-c`, userId: user, amount: 5n, kind: "win" }));
       await ledger.apply(tx({ userId: randomUUID(), amount: 5n }));
-      assert.deepEqual((await ledger.history(user)).map((entry) => entry.id), [`${user}-c`, `${user}-b`, `${user}-a`]);
-      assert.deepEqual((await ledger.history(user, 2)).map((entry) => entry.id), [`${user}-c`, `${user}-b`]);
+      assert.deepEqual(
+        (await ledger.history(user)).map((entry) => entry.id),
+        [`${user}-c`, `${user}-b`, `${user}-a`],
+      );
+      assert.deepEqual(
+        (await ledger.history(user, 2)).map((entry) => entry.id),
+        [`${user}-c`, `${user}-b`],
+      );
     });
   });
 }
@@ -106,7 +116,9 @@ describe("PgLedger under load", { skip: skipWithoutDatabase }, () => {
       Array.from({ length: 300 }, () => ledger.apply(tx({ userId: user, amount: -10n, kind: "bet" }))),
     );
     const taken = results.filter((r) => r.status === "fulfilled").length;
-    const refused = results.filter((r) => r.status === "rejected" && (r.reason as { code?: string }).code === "INSUFFICIENT_FUNDS").length;
+    const refused = results.filter(
+      (r) => r.status === "rejected" && (r.reason as { code?: string }).code === "INSUFFICIENT_FUNDS",
+    ).length;
     assert.equal(taken, 100);
     assert.equal(refused, 200);
     assert.equal(await ledger.balance(user, "USDT"), 0n);
@@ -122,7 +134,9 @@ describe("PgLedger under load", { skip: skipWithoutDatabase }, () => {
     const ledger = new PgLedger(db.pool);
     const user = randomUUID();
     const id = randomUUID();
-    const results = await Promise.all(Array.from({ length: 50 }, () => ledger.apply(tx({ id, userId: user, amount: 7n }))));
+    const results = await Promise.all(
+      Array.from({ length: 50 }, () => ledger.apply(tx({ id, userId: user, amount: 7n }))),
+    );
     assert.ok(results.every((entry) => entry.id === id && entry.balanceAfter === 7n));
     assert.equal(await ledger.balance(user, "USDT"), 7n);
   });
@@ -160,7 +174,9 @@ describe("PgLedger under load", { skip: skipWithoutDatabase }, () => {
     try {
       await client.query("BEGIN");
       await client.query("SET LOCAL ROLE yuubet_wallet");
-      await client.query("INSERT INTO wallet.accounts (user_id, currency) VALUES ($1, 'USDT') ON CONFLICT DO NOTHING", [user]);
+      await client.query("INSERT INTO wallet.accounts (user_id, currency) VALUES ($1, 'USDT') ON CONFLICT DO NOTHING", [
+        user,
+      ]);
       await client.query("SELECT balance FROM wallet.accounts WHERE user_id = $1 FOR UPDATE", [user]);
       await client.query("UPDATE wallet.accounts SET balance = 1 WHERE user_id = $1", [user]);
       await client.query(

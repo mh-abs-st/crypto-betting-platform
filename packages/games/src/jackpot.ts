@@ -51,8 +51,6 @@ export function winChanceBps(entries: JackpotEntry[], userId: string): number {
   if (pot === 0n) {
     return 0;
   }
-  const staked = entries
-    .filter((entry) => entry.userId === userId)
-    .reduce((total, entry) => total + entry.amount, 0n);
+  const staked = entries.filter((entry) => entry.userId === userId).reduce((total, entry) => total + entry.amount, 0n);
   return Number((staked * 10_000n) / pot);
 }

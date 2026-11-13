@@ -40,15 +40,17 @@ export function buildGatewayRouter(config: GatewayConfig): Router {
     });
   };
 
-  return new Router({ corsOrigin: config.webOrigin })
-    .get("/health", () => ({ ok: true }))
-    .post("/api/auth/register", pass(config.authUrl, "/register"))
-    .post("/api/auth/login", pass(config.authUrl, "/login"))
-    .get("/api/auth/me", (ctx) => {
-      const user = authenticate(ctx);
-      return { id: user.id, username: user.name };
-    })
-    // Only a player's own wallet endpoints are reachable from outside.
-    .add("*", "/api/wallet/me/*", pass(config.walletUrl, "/me/", authenticate))
-    .add("*", "/api/games/*", pass(config.gamesUrl, "/", authenticate));
+  return (
+    new Router({ corsOrigin: config.webOrigin })
+      .get("/health", () => ({ ok: true }))
+      .post("/api/auth/register", pass(config.authUrl, "/register"))
+      .post("/api/auth/login", pass(config.authUrl, "/login"))
+      .get("/api/auth/me", (ctx) => {
+        const user = authenticate(ctx);
+        return { id: user.id, username: user.name };
+      })
+      // Only a player's own wallet endpoints are reachable from outside.
+      .add("*", "/api/wallet/me/*", pass(config.walletUrl, "/me/", authenticate))
+      .add("*", "/api/games/*", pass(config.gamesUrl, "/", authenticate))
+  );
 }

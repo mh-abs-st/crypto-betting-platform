@@ -13,5 +13,7 @@ const users: UserStore = databaseUrl
   ? new PgUserStore(createPool(databaseUrl, { applicationName: "yuubet-auth" }))
   : new MemoryUserStore();
 
-await buildAuthRouter({ jwtSecret: envSecret("JWT_SECRET"), internalKey: envSecret("INTERNAL_KEY") }, users).listen(port);
+await buildAuthRouter({ jwtSecret: envSecret("JWT_SECRET"), internalKey: envSecret("INTERNAL_KEY") }, users).listen(
+  port,
+);
 console.log(`auth service listening on ${port}${databaseUrl ? "" : " (in memory: accounts are lost on restart)"}`);

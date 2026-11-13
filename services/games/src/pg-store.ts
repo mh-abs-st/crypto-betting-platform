@@ -240,7 +240,9 @@ export class PgGamesStore implements GamesStore {
   insertMatch(match: VersusMatch, maxOpen: number) {
     return transaction(this.pool, async (client) => {
       // One creator's inserts run one at a time, so two at once cannot both pass the limit.
-      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`versus-creator:${match.creator.id}`]);
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+        `versus-creator:${match.creator.id}`,
+      ]);
       const { rows } = await client.query<{ n: number }>(
         "SELECT count(*)::int AS n FROM games.versus_matches WHERE creator_id = $1 AND status = 'open'",
         [match.creator.id],
@@ -379,7 +381,9 @@ export class PgGamesStore implements GamesStore {
     return {
       spins: spins.rows.map(toSpin),
       prizes: all.filter((m) => m.status === "settling" && m.result !== undefined && m.payoutDueSince !== undefined),
-      refunds: all.filter((m) => (m.status === "cancelled" || m.status === "expired") && m.payoutDueSince !== undefined),
+      refunds: all.filter(
+        (m) => (m.status === "cancelled" || m.status === "expired") && m.payoutDueSince !== undefined,
+      ),
       stalledJoins: all.filter((m) => m.status === "settling" && m.result === undefined),
     };
   }
@@ -398,7 +402,10 @@ export class PgGamesStore implements GamesStore {
     return rows.map((row) => {
       const mine = entries.rows
         .filter((entry) => entry.round_id === row.id)
-        .map((entry): JackpotEntry => ({ user: { id: entry.user_id, name: entry.user_name }, amount: BigInt(entry.amount) }));
+        .map((entry): JackpotEntry => ({
+          user: { id: entry.user_id, name: entry.user_name },
+          amount: BigInt(entry.amount),
+        }));
       return {
         id: row.id,
         number: Number(row.number),

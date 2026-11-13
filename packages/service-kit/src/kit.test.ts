@@ -1,7 +1,18 @@
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
 import { after, before, test } from "node:test";
-import { HttpError, Reply, Router, bodyObject, callService, forward, requireInternal, requireUser, signToken, verifyToken } from "./index";
+import {
+  HttpError,
+  Reply,
+  Router,
+  bodyObject,
+  callService,
+  forward,
+  requireInternal,
+  requireUser,
+  signToken,
+  verifyToken,
+} from "./index";
 
 class Refused extends Error {}
 

@@ -18,12 +18,12 @@ The browser talks only to the gateway. The gateway checks the login token, then 
 
 ## Services
 
-| Service | Port | Owns | Public routes (through the gateway) |
-| --- | --- | --- | --- |
-| gateway | 8080 | Nothing; routing and token checks | `/api/*` |
-| auth | 8081 | Accounts, passwords, tokens | `/api/auth/register`, `/api/auth/login`, `/api/auth/me` |
-| wallet | 8082 | Balances, ledger | `/api/wallet/me/balance`, `/me/transactions`, `/me/faucet` (dev) |
-| games | 8083 | Seeds, bets, matches, rounds | `/api/games/roulette/spin`, `/versus`, `/jackpot`, `/fair/*` |
+| Service | Port | Owns                              | Public routes (through the gateway)                              |
+| ------- | ---- | --------------------------------- | ---------------------------------------------------------------- |
+| gateway | 8080 | Nothing; routing and token checks | `/api/*`                                                         |
+| auth    | 8081 | Accounts, passwords, tokens       | `/api/auth/register`, `/api/auth/login`, `/api/auth/me`          |
+| wallet  | 8082 | Balances, ledger                  | `/api/wallet/me/balance`, `/me/transactions`, `/me/faucet` (dev) |
+| games   | 8083 | Seeds, bets, matches, rounds      | `/api/games/roulette/spin`, `/versus`, `/jackpot`, `/fair/*`     |
 
 The wallet's `/internal/transactions` endpoint moves money. It is called only by other services and is not routed by the gateway.
 
@@ -45,11 +45,11 @@ Migrations are applied by `npm run db:migrate` (`packages/db`): each file runs i
 
 **Storage.** Each service keeps its state behind a small interface with a PostgreSQL implementation and an in-memory one for tests and quick local runs. A service uses PostgreSQL when `DATABASE_URL` is set, and refuses to start without it in production.
 
-| Service | Interface | PostgreSQL | In memory |
-| --- | --- | --- | --- |
-| wallet | `LedgerStore` | `PgLedger`: one transaction per entry, with a row lock on the account | `MemoryLedger` |
-| auth | `UserStore` | `PgUserStore`: the unique index on `lower(username)` decides races for a name | `MemoryUserStore` |
-| games | `GamesStore` | `PgGamesStore`: nonces, joins, cancels and draws are conditional updates, so several instances can share one database | `MemoryGamesStore` |
+| Service | Interface     | PostgreSQL                                                                                                            | In memory          |
+| ------- | ------------- | --------------------------------------------------------------------------------------------------------------------- | ------------------ |
+| wallet  | `LedgerStore` | `PgLedger`: one transaction per entry, with a row lock on the account                                                 | `MemoryLedger`     |
+| auth    | `UserStore`   | `PgUserStore`: the unique index on `lower(username)` decides races for a name                                         | `MemoryUserStore`  |
+| games   | `GamesStore`  | `PgGamesStore`: nonces, joins, cancels and draws are conditional updates, so several instances can share one database | `MemoryGamesStore` |
 
 ## Money owed to players
 
