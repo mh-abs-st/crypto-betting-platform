@@ -47,7 +47,10 @@ jobs:
         run: npm run format:check
       - name: Save the formatting fix as a patch
         if: failure()
-        run: npx prettier --write . && git diff > formatting.patch
+        run: |
+          npx prettier --write . && git diff > formatting.patch
+          echo "Formatting patch (base64; decode and git apply):"
+          echo "PATCH-BEGIN $(gzip -c formatting.patch | base64 -w0) PATCH-END"
       - name: Upload the formatting patch (apply with `git apply formatting.patch`)
         if: failure()
         uses: actions/upload-artifact@v4
