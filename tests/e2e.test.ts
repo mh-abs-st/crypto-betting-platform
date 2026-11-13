@@ -2,30 +2,37 @@ import assert from "node:assert/strict";
 import { request, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { after, before, test } from "node:test";
+import { createTestDatabase, skipWithoutDatabase, type TestDatabase } from "@yuubet/db/testing";
 import { fairInt, verifyCommitment } from "@yuubet/fair";
 import { buildAuthRouter } from "../services/auth/src/app";
+import { PgUserStore } from "../services/auth/src/pg-users";
 import { buildGamesRouter } from "../services/games/src/app";
 import { DEFAULT_GAMES_CONFIG, GamesService } from "../services/games/src/service";
 import { HttpWallet } from "../services/games/src/wallet";
 import { buildGatewayRouter } from "../services/gateway/src/app";
 import { buildWalletRouter } from "../services/wallet/src/app";
+import { PgLedger } from "../services/wallet/src/pg-ledger";
 
 /**
  * Starts all four services on free ports and plays through the gateway,
- * the way the web app does.
+ * the way the web app does. With TEST_DATABASE_URL set, accounts and
+ * balances are kept in a fresh PostgreSQL database; otherwise in memory.
  */
 const servers: Server[] = [];
 const urlOf = (server: Server) => `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 let api = "";
 let walletUrl = "";
 let clock = Date.now();
+let db: TestDatabase | undefined;
 
 before(async () => {
   const jwtSecret = "test-jwt-secret";
   const internalKey = "test-internal-key";
 
-  const auth = await buildAuthRouter({ jwtSecret, internalKey }).listen(0, "127.0.0.1");
-  const wallet = await buildWalletRouter({ internalKey, devFaucet: true }).listen(0, "127.0.0.1");
+  db = skipWithoutDatabase ? undefined : await createTestDatabase();
+
+  const auth = await buildAuthRouter({ jwtSecret, internalKey }, db && new PgUserStore(db.pool)).listen(0, "127.0.0.1");
+  const wallet = await buildWalletRouter({ internalKey, devFaucet: true }, db && new PgLedger(db.pool)).listen(0, "127.0.0.1");
   walletUrl = urlOf(wallet);
   const service = await GamesService.create(new HttpWallet(walletUrl, internalKey), {
     ...DEFAULT_GAMES_CONFIG,
@@ -45,7 +52,10 @@ before(async () => {
   api = `${urlOf(gateway)}/api`;
 });
 
-after(() => servers.forEach((server) => server.close()));
+after(async () => {
+  servers.forEach((server) => server.close());
+  await db?.drop();
+});
 
 async function call(path: string, options: { token?: string; body?: unknown; method?: string } = {}) {
   const headers: Record<string, string> = {};

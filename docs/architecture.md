@@ -48,7 +48,7 @@ Migrations are applied by `npm run db:migrate` (`packages/db`): each file runs i
 | Service | Interface | PostgreSQL | In memory |
 | --- | --- | --- | --- |
 | wallet | `LedgerStore` | `PgLedger`: one transaction per entry, with a row lock on the account | `MemoryLedger` |
-| auth | `UserStore` | not yet (#4) | `UserStore` |
+| auth | `UserStore` | `PgUserStore`: the unique index on `lower(username)` decides races for a name | `MemoryUserStore` |
 | games | `GamesService` | not yet (#5) | `GamesService` |
 
 ## Current limits
