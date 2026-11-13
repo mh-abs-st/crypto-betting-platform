@@ -15,7 +15,7 @@ const USDT = 1_000_000n;
 const player = (name: string) => ({ id: randomUUID(), name });
 
 let db: TestDatabase;
-let pools: Pool[] = [];
+const pools: Pool[] = [];
 let clock = 1_000_000;
 
 before(async () => {
@@ -60,11 +60,20 @@ describe("games on PostgreSQL", { skip: skipWithoutDatabase }, () => {
     const before = await first.currentJackpot();
 
     const restarted = await instance(wallet);
-    assert.deepEqual((await restarted.listVersus()).open.map((m) => m.id), [match.id]);
+    assert.deepEqual(
+      (await restarted.listVersus()).open.map((m) => m.id),
+      [match.id],
+    );
     const round = await restarted.currentJackpot();
     assert.equal(round.id, before.id);
     assert.equal(round.closesAt, before.closesAt);
-    assert.deepEqual(round.entries.map((entry) => [entry.user.name, entry.amount]), [["ann", 2n * USDT], ["bob", 3n * USDT]]);
+    assert.deepEqual(
+      round.entries.map((entry) => [entry.user.name, entry.amount]),
+      [
+        ["ann", 2n * USDT],
+        ["bob", 3n * USDT],
+      ],
+    );
     assert.deepEqual(await restarted.seedInfo(cat.id), { ...spin.fairness, nonce: 1 });
 
     // The restarted instance finishes what the first one started.
@@ -74,7 +83,9 @@ describe("games on PostgreSQL", { skip: skipWithoutDatabase }, () => {
     assert.equal(revealed.serverSeedHash, spin.fairness.serverSeedHash);
     assert.equal(revealed.betsPlaced, 1);
 
-    const { rows } = await db.pool.query("SELECT nonce::int, number::int FROM games.roulette_spins WHERE id = $1", [spin.betId]);
+    const { rows } = await db.pool.query("SELECT nonce::int, number::int FROM games.roulette_spins WHERE id = $1", [
+      spin.betId,
+    ]);
     assert.deepEqual(rows[0], { nonce: 0, number: spin.number });
   });
 
@@ -93,10 +104,17 @@ describe("games on PostgreSQL", { skip: skipWithoutDatabase }, () => {
 
     const spinner = joiners[0]!;
     const spins = await Promise.all(
-      Array.from({ length: 30 }, (_, i) => (i % 2 ? a : b).spinRoulette(spinner, { bets: [{ type: "odd", amount: String(USDT / 100n) }] })),
+      Array.from({ length: 30 }, (_, i) =>
+        (i % 2 ? a : b).spinRoulette(spinner, { bets: [{ type: "odd", amount: String(USDT / 100n) }] }),
+      ),
     );
-    assert.deepEqual(spins.map((s) => s.fairness.nonce).sort((x, y) => x - y), Array.from({ length: 30 }, (_, i) => i));
-    const { rows } = await db.pool.query("SELECT count(*)::int AS n FROM games.roulette_spins WHERE user_id = $1", [spinner.id]);
+    assert.deepEqual(
+      spins.map((s) => s.fairness.nonce).sort((x, y) => x - y),
+      Array.from({ length: 30 }, (_, i) => i),
+    );
+    const { rows } = await db.pool.query("SELECT count(*)::int AS n FROM games.roulette_spins WHERE user_id = $1", [
+      spinner.id,
+    ]);
     assert.equal(rows[0].n, 30);
   });
 
@@ -105,18 +123,28 @@ describe("games on PostgreSQL", { skip: skipWithoutDatabase }, () => {
     const a = await instance(wallet);
     const b = await instance(wallet);
 
-    await Promise.all(users.map((user, i) => (i % 2 ? a : b).enterJackpot(user, { amount: String(BigInt(i + 1) * USDT) })));
+    await Promise.all(
+      users.map((user, i) => (i % 2 ? a : b).enterJackpot(user, { amount: String(BigInt(i + 1) * USDT) })),
+    );
     const round = await a.currentJackpot();
     assert.equal(round.entries.length, 4);
-    assert.equal(new Set((await db.pool.query("SELECT position FROM games.jackpot_entries")).rows.map((r) => r.position)).size, 4);
+    assert.equal(
+      new Set((await db.pool.query("SELECT position FROM games.jackpot_entries")).rows.map((r) => r.position)).size,
+      4,
+    );
 
     clock += DEFAULT_GAMES_CONFIG.jackpotDurationMs;
     const draws = await Promise.all(Array.from({ length: 8 }, (_, i) => (i % 2 ? a : b).drawJackpotIfDue()));
     assert.equal(draws.filter(Boolean).length, 1);
     assert.equal(wallet.moves.filter((move) => move.kind === "win").length, 1);
 
-    const { rows } = await db.pool.query("SELECT status, count(*)::int AS n FROM games.jackpot_rounds GROUP BY status ORDER BY status");
-    assert.deepEqual(rows, [{ status: "open", n: 1 }, { status: "settled", n: 1 }]);
+    const { rows } = await db.pool.query(
+      "SELECT status, count(*)::int AS n FROM games.jackpot_rounds GROUP BY status ORDER BY status",
+    );
+    assert.deepEqual(rows, [
+      { status: "open", n: 1 },
+      { status: "settled", n: 1 },
+    ]);
     assert.equal((await b.listJackpotHistory()).rounds[0]!.id, round.id);
   });
 

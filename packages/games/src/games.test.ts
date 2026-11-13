@@ -45,8 +45,14 @@ test("each outside bet covers the right numbers", () => {
 
   assert.equal(covered({ type: "red" }).length, 18);
   assert.equal(covered({ type: "odd" }).length, 18);
-  assert.deepEqual(covered({ type: "low" }), Array.from({ length: 18 }, (_, i) => i + 1));
-  assert.deepEqual(covered({ type: "dozen", value: 2 }), Array.from({ length: 12 }, (_, i) => i + 13));
+  assert.deepEqual(
+    covered({ type: "low" }),
+    Array.from({ length: 18 }, (_, i) => i + 1),
+  );
+  assert.deepEqual(
+    covered({ type: "dozen", value: 2 }),
+    Array.from({ length: 12 }, (_, i) => i + 13),
+  );
   assert.deepEqual(covered({ type: "column", value: 3 }), [3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36]);
   assert.deepEqual(covered({ type: "straight", value: 0 }), [0]);
   // Zero loses every outside bet.
@@ -103,7 +109,11 @@ test("invalid roulette bets are rejected", () => {
     { type: "split" as never, amount: 1n },
   ];
   for (const bet of bad) {
-    assert.throws(() => validateRouletteBet(bet), GameError, JSON.stringify(bet, (_, v) => String(v)));
+    assert.throws(
+      () => validateRouletteBet(bet),
+      GameError,
+      JSON.stringify(bet, (_, v) => String(v)),
+    );
   }
   assert.throws(() => settleRoulette([], 5), GameError);
 });

@@ -1,5 +1,7 @@
 # YuuBet
 
+[![CI](https://github.com/mh-abs-st/crypto-betting-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/mh-abs-st/crypto-betting-platform/actions/workflows/ci.yml)
+
 A cryptocurrency betting platform built around provably fair games.
 
 **Status: early development build.** Three games are playable with play money: Roulette, Versus and Jackpot. There are no real deposits or withdrawals yet. All state is kept in PostgreSQL when `DATABASE_URL` is set; without it, the services hold state in memory and lose it on restart.
@@ -43,18 +45,18 @@ The PostgreSQL schema is in `db/migrations`. `docker compose up -d` starts a dat
 
 ## Layout
 
-| Path | Contents |
-| --- | --- |
-| `packages/fair` | Provably fair random numbers. Runs in Node and in the browser. |
-| `packages/games` | Game rules as pure functions: roulette, versus, jackpot, money. |
-| `packages/db` | PostgreSQL pool, transactions with retries, migration runner, test databases. |
-| `packages/service-kit` | Shared HTTP router, login tokens and config helpers for the services. |
-| `services/gateway` | The only public entry point. Checks tokens and routes to services. |
-| `services/auth` | Accounts and sign-in. |
-| `services/wallet` | Balances and the ledger. |
-| `services/games` | The three games. |
-| `web` | React front end. |
-| `db/migrations` | PostgreSQL schema, one schema per service, and a role per service. |
-| `tests` | End-to-end test that plays through the gateway. |
+| Path                   | Contents                                                                      |
+| ---------------------- | ----------------------------------------------------------------------------- |
+| `packages/fair`        | Provably fair random numbers. Runs in Node and in the browser.                |
+| `packages/games`       | Game rules as pure functions: roulette, versus, jackpot, money.               |
+| `packages/db`          | PostgreSQL pool, transactions with retries, migration runner, test databases. |
+| `packages/service-kit` | Shared HTTP router, login tokens and config helpers for the services.         |
+| `services/gateway`     | The only public entry point. Checks tokens and routes to services.            |
+| `services/auth`        | Accounts and sign-in.                                                         |
+| `services/wallet`      | Balances and the ledger.                                                      |
+| `services/games`       | The three games.                                                              |
+| `web`                  | React front end.                                                              |
+| `db/migrations`        | PostgreSQL schema, one schema per service, and a role per service.            |
+| `tests`                | End-to-end test that plays through the gateway.                               |
 
 See [`docs/architecture.md`](docs/architecture.md) for the design and [`docs/provably-fair.md`](docs/provably-fair.md) for how results are generated and verified.

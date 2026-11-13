@@ -55,8 +55,8 @@ export function VersusPage({ session, refreshBalance }: PageProps) {
       <section className="card">
         <h2>Start a match</h2>
         <p className="muted">
-          You and one opponent stake the same amount on opposite sides of a coin. The winner takes the pot, less a 2% fee.
-          A match nobody joins within 30 minutes is cancelled and your stake returned.
+          You and one opponent stake the same amount on opposite sides of a coin. The winner takes the pot, less a 2%
+          fee. A match nobody joins within 30 minutes is cancelled and your stake returned.
         </p>
         <label className="inline">
           Stake ({CURRENCY})

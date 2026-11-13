@@ -39,7 +39,12 @@ export function parseParams(text: string): ScryptParams {
 
 function derive(password: string, salt: Buffer, params: ScryptParams): Promise<Buffer> {
   // scrypt needs about 128 * N * r bytes; allow twice that.
-  return scryptAsync(password, salt, params.keyLength, { N: params.N, r: params.r, p: params.p, maxmem: 256 * params.N * params.r });
+  return scryptAsync(password, salt, params.keyLength, {
+    N: params.N,
+    r: params.r,
+    p: params.p,
+    maxmem: 256 * params.N * params.r,
+  });
 }
 
 export async function hashPassword(password: string, params = CURRENT_PARAMS): Promise<PasswordHash> {
@@ -48,7 +53,11 @@ export async function hashPassword(password: string, params = CURRENT_PARAMS): P
 }
 
 // Checked against when the username does not exist, so a wrong name takes as long as a wrong password.
-const DECOY: PasswordHash = { params: formatParams(CURRENT_PARAMS), salt: randomBytes(16), hash: randomBytes(CURRENT_PARAMS.keyLength) };
+const DECOY: PasswordHash = {
+  params: formatParams(CURRENT_PARAMS),
+  salt: randomBytes(16),
+  hash: randomBytes(CURRENT_PARAMS.keyLength),
+};
 
 /** True if the password matches. Pass `undefined` for an unknown user to spend the same time and return false. */
 export async function verifyPassword(password: string, stored: PasswordHash | undefined): Promise<boolean> {

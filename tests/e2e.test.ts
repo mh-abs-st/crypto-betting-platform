@@ -33,12 +33,19 @@ before(async () => {
   db = skipWithoutDatabase ? undefined : await createTestDatabase();
 
   const auth = await buildAuthRouter({ jwtSecret, internalKey }, db && new PgUserStore(db.pool)).listen(0, "127.0.0.1");
-  const wallet = await buildWalletRouter({ internalKey, devFaucet: true }, db && new PgLedger(db.pool)).listen(0, "127.0.0.1");
+  const wallet = await buildWalletRouter({ internalKey, devFaucet: true }, db && new PgLedger(db.pool)).listen(
+    0,
+    "127.0.0.1",
+  );
   walletUrl = urlOf(wallet);
-  const service = await GamesService.create(new HttpWallet(walletUrl, internalKey), {
-    ...DEFAULT_GAMES_CONFIG,
-    now: () => clock,
-  }, db && new PgGamesStore(db.pool));
+  const service = await GamesService.create(
+    new HttpWallet(walletUrl, internalKey),
+    {
+      ...DEFAULT_GAMES_CONFIG,
+      now: () => clock,
+    },
+    db && new PgGamesStore(db.pool),
+  );
   const games = await buildGamesRouter(service, internalKey).listen(0, "127.0.0.1");
   const gateway = await buildGatewayRouter({
     jwtSecret,
@@ -90,7 +97,10 @@ test("accounts: register, sign in, and rejections", async () => {
   const token = await signUp("alice");
   assert.deepEqual((await call("/auth/me", { token })).body.username, "alice");
 
-  assert.equal((await call("/auth/register", { body: { username: "ALICE", password: "another password" } })).status, 409);
+  assert.equal(
+    (await call("/auth/register", { body: { username: "ALICE", password: "another password" } })).status,
+    409,
+  );
   assert.equal((await call("/auth/register", { body: { username: "al", password: "long enough pw" } })).status, 400);
   assert.equal((await call("/auth/register", { body: { username: "shorty", password: "short" } })).status, 400);
   assert.equal((await call("/auth/login", { body: { username: "alice", password: "wrong password" } })).status, 401);
@@ -115,9 +125,17 @@ test("the gateway keeps strangers and internal endpoints out", async () => {
   const raw = await new Promise<number>((resolve, reject) => {
     const url = new URL(api);
     const req = request(
-      { host: url.hostname, port: url.port, method: "POST", path: "/api/wallet/me/%2e%2e/internal/transactions",
-        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" } },
-      (res) => { res.resume(); resolve(res.statusCode ?? 0); },
+      {
+        host: url.hostname,
+        port: url.port,
+        method: "POST",
+        path: "/api/wallet/me/%2e%2e/internal/transactions",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      },
+      (res) => {
+        res.resume();
+        resolve(res.statusCode ?? 0);
+      },
     );
     req.on("error", reject);
     req.end(JSON.stringify(mint));
@@ -138,7 +156,12 @@ test("roulette through the gateway, verified from the revealed seed", async () =
 
   const spin = await call("/games/roulette/spin", {
     token,
-    body: { bets: [{ type: "even", amount: "5000000" }, { type: "dozen", value: 3, amount: "1000000" }] },
+    body: {
+      bets: [
+        { type: "even", amount: "5000000" },
+        { type: "dozen", value: 3, amount: "1000000" },
+      ],
+    },
   });
   assert.equal(spin.status, 200);
   assert.equal(spin.body.totalStake, "6000000");
@@ -149,7 +172,10 @@ test("roulette through the gateway, verified from the revealed seed", async () =
   const roll = await fairInt({ serverSeed: rotated.revealed.serverSeed, clientSeed: seed.clientSeed, nonce: 0 }, 37n);
   assert.equal(spin.body.number, Number(roll));
 
-  const refused = await call("/games/roulette/spin", { token, body: { bets: [{ type: "purple", amount: "5000000" }] } });
+  const refused = await call("/games/roulette/spin", {
+    token,
+    body: { bets: [{ type: "purple", amount: "5000000" }] },
+  });
   assert.equal(refused.status, 400);
   assert.equal(refused.body.error.code, "INVALID_BET");
   const broke = await call("/games/roulette/spin", { token, body: { bets: [{ type: "red", amount: "900000000" }] } });

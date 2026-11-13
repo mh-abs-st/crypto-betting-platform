@@ -131,7 +131,14 @@ export class GamesService {
 
   private async freshSeedPair(userId: string, clientSeed = generateSeed(8)): Promise<SeedPair> {
     const serverSeed = generateSeed();
-    return { id: randomUUID(), userId, serverSeed, serverSeedHash: await hashServerSeed(serverSeed), clientSeed, nonce: 0 };
+    return {
+      id: randomUUID(),
+      userId,
+      serverSeed,
+      serverSeedHash: await hashServerSeed(serverSeed),
+      clientSeed,
+      nonce: 0,
+    };
   }
 
   private async seedPair(userId: string): Promise<SeedPair> {
@@ -196,7 +203,14 @@ export class GamesService {
     await this.seedPair(user.id);
     const betId = randomUUID();
     const currency = this.config.currency;
-    await this.wallet.move({ id: `${betId}:stake`, userId: user.id, currency, amount: -total, kind: "bet", ref: betId });
+    await this.wallet.move({
+      id: `${betId}:stake`,
+      userId: user.id,
+      currency,
+      amount: -total,
+      kind: "bet",
+      ref: betId,
+    });
 
     // The stake is taken, so the bet is final. The store hands out each nonce once.
     const { pair, nonce } = await this.store.claimNonce(user.id);
@@ -219,7 +233,9 @@ export class GamesService {
 
     let payoutStatus: PayoutStatus = "none";
     if (settlement.totalPayout > 0n) {
-      payoutStatus = (await this.payRouletteSpin(betId, user.id, currency, settlement.totalPayout)) ? "paid" : "pending";
+      payoutStatus = (await this.payRouletteSpin(betId, user.id, currency, settlement.totalPayout))
+        ? "paid"
+        : "pending";
     }
 
     return {
@@ -564,8 +580,7 @@ export class GamesService {
     if (!current) {
       return undefined;
     }
-    const due =
-      current.status === "drawing" || (current.closesAt !== undefined && this.now() >= current.closesAt);
+    const due = current.status === "drawing" || (current.closesAt !== undefined && this.now() >= current.closesAt);
     if (!due) {
       return undefined;
     }
@@ -575,7 +590,9 @@ export class GamesService {
       return undefined;
     }
     if (round.entropy.source !== this.entropy.name) {
-      throw new Error(`Round ${round.id} committed to ${round.entropy.source}, but this instance reads ${this.entropy.name}`);
+      throw new Error(
+        `Round ${round.id} committed to ${round.entropy.source}, but this instance reads ${this.entropy.name}`,
+      );
     }
     const blockHash = await this.entropy.settledHash(round.entropy.height);
     if (!blockHash) {
@@ -654,7 +671,11 @@ export class GamesService {
     };
 
     for (const spin of due.spins) {
-      done(await this.payRouletteSpin(spin.id, spin.userId, spin.currency, spin.totalPayout), `roulette payout ${spin.id}`, spin.payoutDueSince);
+      done(
+        await this.payRouletteSpin(spin.id, spin.userId, spin.currency, spin.totalPayout),
+        `roulette payout ${spin.id}`,
+        spin.payoutDueSince,
+      );
     }
     for (const match of due.prizes) {
       done(await this.payVersusPrize(match), `versus prize ${match.id}`, match.payoutDueSince);

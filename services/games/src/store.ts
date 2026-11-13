@@ -253,7 +253,10 @@ export class MemoryGamesStore implements GamesStore {
 
   async insertMatch(match: VersusMatch, maxOpen: number) {
     const allowed = (await this.countOpenMatches(match.creator.id)) < maxOpen;
-    this.matches.set(match.id, allowed ? copy(match) : { ...copy(match), status: "cancelled", payoutDueSince: Date.now() });
+    this.matches.set(
+      match.id,
+      allowed ? copy(match) : { ...copy(match), status: "cancelled", payoutDueSince: Date.now() },
+    );
     return allowed;
   }
 
@@ -337,8 +340,12 @@ export class MemoryGamesStore implements GamesStore {
     return {
       spins: this.spins.filter((spin) => due(spin.payoutDueSince)).map(copy),
       prizes: matches.filter((m) => m.status === "settling" && due(m.payoutDueSince)).map(copy),
-      refunds: matches.filter((m) => (m.status === "cancelled" || m.status === "expired") && due(m.payoutDueSince)).map(copy),
-      stalledJoins: matches.filter((m) => m.status === "settling" && m.result === undefined && due(m.joinedAt)).map(copy),
+      refunds: matches
+        .filter((m) => (m.status === "cancelled" || m.status === "expired") && due(m.payoutDueSince))
+        .map(copy),
+      stalledJoins: matches
+        .filter((m) => m.status === "settling" && m.result === undefined && due(m.joinedAt))
+        .map(copy),
     };
   }
 

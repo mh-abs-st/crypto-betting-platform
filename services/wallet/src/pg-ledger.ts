@@ -130,7 +130,15 @@ export class PgLedger implements LedgerStore {
         `INSERT INTO wallet.ledger_entries (id, user_id, currency, amount, kind, ref, balance_after)
          VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING ${ENTRY_COLUMNS}`,
-        [input.id, input.userId, input.currency, input.amount.toString(), input.kind, input.ref, balanceAfter.toString()],
+        [
+          input.id,
+          input.userId,
+          input.currency,
+          input.amount.toString(),
+          input.kind,
+          input.ref,
+          balanceAfter.toString(),
+        ],
       );
       return toEntry(rows[0]!);
     });

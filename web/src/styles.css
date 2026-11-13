@@ -12,7 +12,12 @@
   --red: #c8323c;
   --black: #262c36;
   --green: #1f8f5a;
-  font-family: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-family:
+    "Inter",
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    sans-serif;
   color: var(--text);
   background: var(--bg);
 }

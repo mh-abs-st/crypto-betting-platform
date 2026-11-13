@@ -1,5 +1,13 @@
 import { GameError } from "@yuubet/games";
-import { HttpError, Reply, Router, bodyObject, requireInternal, requireUser, type RequestContext } from "@yuubet/service-kit";
+import {
+  HttpError,
+  Reply,
+  Router,
+  bodyObject,
+  requireInternal,
+  requireUser,
+  type RequestContext,
+} from "@yuubet/service-kit";
 import type { GamesService } from "./service";
 
 const STATUS_BY_CODE: Record<string, number> = {
@@ -24,7 +32,9 @@ export function buildGamesRouter(service: GamesService, internalKey: string): Ro
 
   return new Router()
     .mapError((error) =>
-      error instanceof GameError ? new HttpError(STATUS_BY_CODE[error.code] ?? 400, error.code, error.message) : undefined,
+      error instanceof GameError
+        ? new HttpError(STATUS_BY_CODE[error.code] ?? 400, error.code, error.message)
+        : undefined,
     )
     .get("/health", () => ({ ok: true }))
     .get("/config", (ctx) => {

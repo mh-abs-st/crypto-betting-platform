@@ -42,7 +42,10 @@ export function saveSession(session: Session | null): void {
   }
 }
 
-export async function api<T>(path: string, options: { token?: string; body?: unknown; method?: string } = {}): Promise<T> {
+export async function api<T>(
+  path: string,
+  options: { token?: string; body?: unknown; method?: string } = {},
+): Promise<T> {
   const headers: Record<string, string> = {};
   if (options.token) {
     headers.Authorization = `Bearer ${options.token}`;

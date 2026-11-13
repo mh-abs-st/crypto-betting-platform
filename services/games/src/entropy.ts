@@ -64,7 +64,10 @@ export class EthereumEntropy implements EntropySource {
     if ((await this.tip()) < height + this.confirmations) {
       return undefined;
     }
-    const block = await this.call<{ hash?: string } | null>("eth_getBlockByNumber", [`0x${height.toString(16)}`, false]);
+    const block = await this.call<{ hash?: string } | null>("eth_getBlockByNumber", [
+      `0x${height.toString(16)}`,
+      false,
+    ]);
     if (!block?.hash || !HASH.test(block.hash)) {
       return undefined;
     }

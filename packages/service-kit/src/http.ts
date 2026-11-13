@@ -1,5 +1,11 @@
 import { timingSafeEqual } from "node:crypto";
-import { createServer, type IncomingHttpHeaders, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import {
+  createServer,
+  type IncomingHttpHeaders,
+  type IncomingMessage,
+  type Server,
+  type ServerResponse,
+} from "node:http";
 
 const MAX_BODY_BYTES = 64 * 1024;
 
@@ -91,7 +97,10 @@ export class Router {
     });
   }
 
-  private match(method: string, path: string): { route: Route; params: Record<string, string> } | "wrong-method" | undefined {
+  private match(
+    method: string,
+    path: string,
+  ): { route: Route; params: Record<string, string> } | "wrong-method" | undefined {
     const actual = splitPath(path);
     let pathMatched = false;
 

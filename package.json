@@ -15,15 +15,23 @@
     "dev:games": "tsx watch services/games/src/main.ts",
     "dev:gateway": "tsx watch services/gateway/src/main.ts",
     "dev:web": "npm --prefix web run dev",
-    "db:migrate": "tsx packages/db/src/cli.ts"
+    "db:migrate": "tsx packages/db/src/cli.ts",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
   },
   "dependencies": {
     "pg": "^8.13.1"
   },
   "devDependencies": {
-    "@types/pg": "^8.11.10",
+    "@eslint/js": "^9.17.0",
     "@types/node": "^22.10.0",
+    "@types/pg": "^8.11.10",
+    "eslint": "^9.17.0",
+    "globals": "^15.14.0",
+    "prettier": "^3.4.2",
     "tsx": "^4.19.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "typescript-eslint": "^8.18.0"
   }
 }

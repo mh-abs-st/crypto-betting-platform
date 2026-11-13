@@ -41,7 +41,9 @@ export class PgUserStore implements UserStore {
     if (!input) {
       throw invalidCredentials();
     }
-    const { rows } = await this.pool.query<UserRow & { password_salt: Buffer; password_hash: Buffer; password_params: string }>(
+    const { rows } = await this.pool.query<
+      UserRow & { password_salt: Buffer; password_hash: Buffer; password_params: string }
+    >(
       `SELECT id, username, created_at, password_salt, password_hash, password_params
        FROM auth.users WHERE lower(username) = lower($1)`,
       [input.username],
