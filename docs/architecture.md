@@ -43,7 +43,13 @@ The wallet's `/internal/transactions` endpoint moves money. It is called only by
 
 Migrations are applied by `npm run db:migrate` (`packages/db`): each file runs in its own transaction, is recorded in `public.schema_migrations` with a checksum, and is never edited after it has been applied. `packages/db` also provides the connection pool and a `transaction` helper that rolls back on error and runs the transaction again after a serialization failure or deadlock. Constraints enforce the important rules in the database too: non-negative balances, one active seed pair per player, one open jackpot round.
 
-**The services do not use the database yet.** State is in memory behind small classes (`UserStore`, `Ledger`, `GamesService`) whose shape follows the tables. Moving them to PostgreSQL is the first milestone.
+**Storage.** Each service keeps its state behind a small interface with a PostgreSQL implementation and an in-memory one for tests and quick local runs. A service uses PostgreSQL when `DATABASE_URL` is set, and refuses to start without it in production.
+
+| Service | Interface | PostgreSQL | In memory |
+| --- | --- | --- | --- |
+| wallet | `LedgerStore` | `PgLedger`: one transaction per entry, with a row lock on the account | `MemoryLedger` |
+| auth | `UserStore` | not yet (#4) | `UserStore` |
+| games | `GamesService` | not yet (#5) | `GamesService` |
 
 ## Current limits
 
