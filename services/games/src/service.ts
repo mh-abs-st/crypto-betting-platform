@@ -20,6 +20,7 @@ import {
   type Side,
 } from "@yuubet/games";
 import type { Caller } from "@yuubet/service-kit";
+import { MemoryGamesStore, type GamesStore, type JackpotRound, type SeedPair, type VersusMatch } from "./store";
 import type { WalletPort } from "./wallet";
 
 export interface GamesConfig {
@@ -45,46 +46,6 @@ export const DEFAULT_GAMES_CONFIG: GamesConfig = {
 const CLIENT_SEED = /^[A-Za-z0-9_-]{1,64}$/;
 const HISTORY_LIMIT = 20;
 
-interface SeedPair {
-  serverSeed: string;
-  serverSeedHash: string;
-  clientSeed: string;
-  nonce: number;
-}
-
-interface VersusMatch {
-  id: string;
-  stake: bigint;
-  creator: Caller;
-  creatorSide: Side;
-  creatorSeed: string;
-  serverSeed: string;
-  serverSeedHash: string;
-  status: "open" | "settling" | "settled" | "cancelled";
-  createdAt: number;
-  joiner?: Caller;
-  joinerSeed?: string;
-  result?: Side;
-  winner?: Caller;
-  prize?: bigint;
-  fee?: bigint;
-}
-
-interface JackpotRound {
-  id: string;
-  number: number;
-  serverSeed: string;
-  serverSeedHash: string;
-  status: "open" | "drawing" | "settled";
-  entries: Array<{ user: Caller; amount: bigint }>;
-  closesAt?: number;
-  clientSeed?: string;
-  winningTicket?: bigint;
-  winner?: Caller;
-  prize?: bigint;
-  fee?: bigint;
-}
-
 function clientSeedFrom(value: unknown): string {
   if (value === undefined || value === null || value === "") {
     return generateSeed(8);
@@ -100,26 +61,29 @@ function clientSeedFrom(value: unknown): string {
  * outcome is computed and publishes the hash of its server seed before any
  * bet, so every result can be verified afterwards.
  *
- * Game state is kept in memory for now; the tables are in db/migrations.
+ * State lives in a GamesStore: PostgreSQL in production, memory in tests.
+ * Every change of state is a conditional claim in the store, so several
+ * instances of this service can run against one database.
  */
 export class GamesService {
-  private readonly seeds = new Map<string, SeedPair>();
-  private readonly versus = new Map<string, VersusMatch>();
-  private readonly jackpotHistory: JackpotRound[] = [];
-  private jackpot!: JackpotRound;
-  private jackpotCount = 0;
   private readonly now: () => number;
 
   private constructor(
     private readonly wallet: WalletPort,
     private readonly config: GamesConfig,
+    private readonly store: GamesStore,
   ) {
     this.now = config.now ?? Date.now;
   }
 
-  static async create(wallet: WalletPort, config: GamesConfig = DEFAULT_GAMES_CONFIG): Promise<GamesService> {
-    const service = new GamesService(wallet, config);
-    service.jackpot = await service.newJackpotRound();
+  static async create(
+    wallet: WalletPort,
+    config: GamesConfig = DEFAULT_GAMES_CONFIG,
+    store: GamesStore = new MemoryGamesStore(),
+  ): Promise<GamesService> {
+    const service = new GamesService(wallet, config, store);
+    // Resumes the round that was open before a restart, or opens the first one.
+    await service.jackpotRound();
     return service;
   }
 
@@ -144,16 +108,13 @@ export class GamesService {
 
   // ----- Seeds for single-player games -----
 
+  private async freshSeedPair(userId: string, clientSeed = generateSeed(8)): Promise<SeedPair> {
+    const serverSeed = generateSeed();
+    return { id: randomUUID(), userId, serverSeed, serverSeedHash: await hashServerSeed(serverSeed), clientSeed, nonce: 0 };
+  }
+
   private async seedPair(userId: string): Promise<SeedPair> {
-    let pair = this.seeds.get(userId);
-    if (!pair) {
-      const serverSeed = generateSeed();
-      const created = { serverSeed, serverSeedHash: await hashServerSeed(serverSeed), clientSeed: generateSeed(8), nonce: 0 };
-      // Another request may have created the pair while hashing; keep the first.
-      pair = this.seeds.get(userId) ?? created;
-      this.seeds.set(userId, pair);
-    }
-    return pair;
+    return (await this.store.activeSeedPair(userId)) ?? this.store.createSeedPair(await this.freshSeedPair(userId));
   }
 
   async seedInfo(userId: string) {
@@ -168,22 +129,20 @@ export class GamesService {
   async rotateSeed(userId: string, clientSeed: unknown) {
     const nextClientSeed = clientSeedFrom(clientSeed);
     const previous = await this.seedPair(userId);
-    const serverSeed = generateSeed();
-    const serverSeedHash = await hashServerSeed(serverSeed);
+    const next = await this.freshSeedPair(userId, nextClientSeed);
 
-    if (this.seeds.get(userId) !== previous) {
+    const revealed = await this.store.rotateSeedPair(userId, previous.id, next);
+    if (!revealed) {
       throw new GameError("SEED_CHANGED", "Your seed changed while rotating. Try again.");
     }
-    this.seeds.set(userId, { serverSeed, serverSeedHash, clientSeed: nextClientSeed, nonce: 0 });
-
     return {
       revealed: {
-        serverSeed: previous.serverSeed,
-        serverSeedHash: previous.serverSeedHash,
-        clientSeed: previous.clientSeed,
-        betsPlaced: previous.nonce,
+        serverSeed: revealed.serverSeed,
+        serverSeedHash: revealed.serverSeedHash,
+        clientSeed: revealed.clientSeed,
+        betsPlaced: revealed.nonce,
       },
-      current: { serverSeedHash, clientSeed: nextClientSeed, nonce: 0 },
+      current: { serverSeedHash: next.serverSeedHash, clientSeed: next.clientSeed, nonce: 0 },
     };
   }
 
@@ -212,19 +171,30 @@ export class GamesService {
       );
     }
 
+    // Make sure a seed pair exists before the stake is taken.
+    await this.seedPair(user.id);
     const betId = randomUUID();
     const currency = this.config.currency;
     await this.wallet.move({ id: `${betId}:stake`, userId: user.id, currency, amount: -total, kind: "bet", ref: betId });
 
-    // The stake is taken, so the bet is final. Claim the next nonce without
-    // awaiting in between, so two spins can never share one.
-    const pair = await this.seedPair(user.id);
-    const nonce = pair.nonce;
-    pair.nonce += 1;
+    // The stake is taken, so the bet is final. The store hands out each nonce once.
+    const { pair, nonce } = await this.store.claimNonce(user.id);
     const fairness = { serverSeedHash: pair.serverSeedHash, clientSeed: pair.clientSeed, nonce };
 
     const roll = await fairInt({ serverSeed: pair.serverSeed, clientSeed: pair.clientSeed, nonce }, ROULETTE_POCKETS);
     const settlement = settleRoulette(bets, Number(roll));
+
+    await this.store.recordSpin({
+      id: betId,
+      userId: user.id,
+      seedPairId: pair.id,
+      nonce,
+      currency,
+      bets,
+      number: settlement.number,
+      totalStake: settlement.totalStake,
+      totalPayout: settlement.totalPayout,
+    });
 
     if (settlement.totalPayout > 0n) {
       await this.wallet.move({
@@ -261,7 +231,7 @@ export class GamesService {
     const settled = match.status === "settled";
     return {
       id: match.id,
-      currency: this.config.currency,
+      currency: match.currency,
       stake: match.stake,
       status: match.status === "settling" ? "open" : match.status,
       creator: match.creator,
@@ -269,23 +239,21 @@ export class GamesService {
       serverSeedHash: match.serverSeedHash,
       createdAt: match.createdAt,
       joiner: match.joiner,
-      result: match.result,
-      winner: match.winner,
-      prize: match.prize,
-      fee: match.fee,
+      result: settled ? match.result : undefined,
+      winner: settled ? match.winner : undefined,
+      prize: settled ? match.prize : undefined,
+      fee: settled ? match.fee : undefined,
       // Secret until the match is over.
       serverSeed: settled ? match.serverSeed : undefined,
       clientSeed: settled ? `${match.creatorSeed}:${match.joinerSeed}` : undefined,
     };
   }
 
-  listVersus() {
-    const matches = [...this.versus.values()];
-    const open = matches.filter((match) => match.status === "open" || match.status === "settling");
-    const recent = matches.filter((match) => match.status === "settled").slice(-HISTORY_LIMIT);
+  async listVersus() {
+    const { open, recent } = await this.store.listMatches(HISTORY_LIMIT);
     return {
-      open: open.reverse().map((match) => this.versusView(match)),
-      recent: recent.reverse().map((match) => this.versusView(match)),
+      open: open.map((match) => this.versusView(match)),
+      recent: recent.map((match) => this.versusView(match)),
     };
   }
 
@@ -310,6 +278,7 @@ export class GamesService {
 
     const match: VersusMatch = {
       id,
+      currency: this.config.currency,
       stake,
       creator: user,
       creatorSide: input.side,
@@ -319,65 +288,67 @@ export class GamesService {
       status: "open",
       createdAt: this.now(),
     };
-    this.versus.set(id, match);
+    await this.store.insertMatch(match);
     return this.versusView(match);
   }
 
-  private openMatch(id: string): VersusMatch {
-    const match = this.versus.get(id);
+  /** Explains why a match cannot be joined or cancelled. */
+  private async refusal(id: string, userId: string, action: "join" | "cancel"): Promise<GameError> {
+    const match = await this.store.getMatch(id);
     if (!match) {
-      throw new GameError("NOT_FOUND", "No such match");
+      return new GameError("NOT_FOUND", "No such match");
     }
     if (match.status !== "open") {
-      throw new GameError("MATCH_CLOSED", "This match is no longer open");
+      return new GameError("MATCH_CLOSED", "This match is no longer open");
     }
-    return match;
+    if (action === "join" && match.creator.id === userId) {
+      return new GameError("OWN_MATCH", "You cannot join your own match");
+    }
+    if (action === "cancel" && match.creator.id !== userId) {
+      return new GameError("NOT_YOUR_MATCH", "Only the player who created a match can cancel it");
+    }
+    return new GameError("MATCH_CLOSED", "This match is no longer open");
   }
 
   async joinVersus(user: Caller, id: string, input: Record<string, unknown>) {
     const joinerSeed = clientSeedFrom(input.clientSeed);
-    const match = this.openMatch(id);
-    if (match.creator.id === user.id) {
-      throw new GameError("OWN_MATCH", "You cannot join your own match");
-    }
 
-    // Claim the seat before any await, so a second joiner is turned away.
-    match.status = "settling";
-    const currency = this.config.currency;
+    // Claim the seat first, so a second joiner is turned away.
+    const match = await this.store.claimJoin(id, user, joinerSeed);
+    if (!match) {
+      throw await this.refusal(id, user.id, "join");
+    }
+    const currency = match.currency;
     try {
       await this.wallet.move({ id: `${id}:joiner`, userId: user.id, currency, amount: -match.stake, kind: "bet", ref: id });
     } catch (error) {
-      match.status = "open";
+      await this.store.releaseJoin(id, user.id);
       throw error;
     }
 
-    match.joiner = user;
-    match.joinerSeed = joinerSeed;
     const roll = await fairInt(
       { serverSeed: match.serverSeed, clientSeed: `${match.creatorSeed}:${joinerSeed}`, nonce: 0 },
       VERSUS_OUTCOMES,
     );
     const split = versusPayout(match.stake, this.config.versusFeeBps);
-    match.result = versusOutcome(roll);
-    match.winner = match.result === match.creatorSide ? match.creator : user;
-    match.prize = split.prize;
-    match.fee = split.fee;
+    const result = versusOutcome(roll);
+    const winner = result === match.creatorSide ? match.creator : user;
+    await this.store.recordVersusResult(id, { result, winner, prize: split.prize, fee: split.fee });
 
-    await this.wallet.move({ id: `${id}:prize`, userId: match.winner.id, currency, amount: split.prize, kind: "win", ref: id });
-    match.status = "settled";
-    return this.versusView(match);
+    await this.wallet.move({ id: `${id}:prize`, userId: winner.id, currency, amount: split.prize, kind: "win", ref: id });
+    await this.store.markSettled(id);
+    return this.versusView((await this.store.getMatch(id))!);
   }
 
   async cancelVersus(user: Caller, id: string) {
-    const match = this.openMatch(id);
-    if (match.creator.id !== user.id) {
-      throw new GameError("NOT_YOUR_MATCH", "Only the player who created a match can cancel it");
+    const match = await this.store.cancelMatch(id, user.id);
+    if (!match) {
+      throw await this.refusal(id, user.id, "cancel");
     }
-    match.status = "cancelled";
     await this.wallet.move({
       id: `${id}:refund`,
       userId: user.id,
-      currency: this.config.currency,
+      currency: match.currency,
       amount: match.stake,
       kind: "refund",
       ref: id,
@@ -392,17 +363,19 @@ export class GamesService {
 
   // ----- Jackpot -----
 
-  private async newJackpotRound(): Promise<JackpotRound> {
+  /** The round taking entries or being drawn; opens a new one if there is none. */
+  private async jackpotRound(): Promise<JackpotRound> {
+    const current = await this.store.currentRound();
+    if (current) {
+      return current;
+    }
     const serverSeed = generateSeed();
-    this.jackpotCount += 1;
-    return {
+    return this.store.openRound({
       id: randomUUID(),
-      number: this.jackpotCount,
+      currency: this.config.currency,
       serverSeed,
       serverSeedHash: await hashServerSeed(serverSeed),
-      status: "open",
-      entries: [],
-    };
+    });
   }
 
   private jackpotView(round: JackpotRound) {
@@ -411,7 +384,7 @@ export class GamesService {
     return {
       id: round.id,
       number: round.number,
-      currency: this.config.currency,
+      currency: round.currency,
       status: round.status === "drawing" ? "open" : round.status,
       serverSeedHash: round.serverSeedHash,
       pot: jackpotPot(stakes),
@@ -421,27 +394,27 @@ export class GamesService {
         amount: entry.amount,
         chanceBps: winChanceBps(stakes, entry.user.id),
       })),
-      winner: round.winner,
-      winningTicket: round.winningTicket,
-      prize: round.prize,
-      fee: round.fee,
+      winner: settled ? round.winner : undefined,
+      winningTicket: settled ? round.winningTicket : undefined,
+      prize: settled ? round.prize : undefined,
+      fee: settled ? round.fee : undefined,
       // Secret until the round is over.
       serverSeed: settled ? round.serverSeed : undefined,
       clientSeed: settled ? round.clientSeed : undefined,
     };
   }
 
-  currentJackpot() {
-    return this.jackpotView(this.jackpot);
+  async currentJackpot() {
+    return this.jackpotView(await this.jackpotRound());
   }
 
-  listJackpotHistory() {
-    return { rounds: this.jackpotHistory.slice(-HISTORY_LIMIT).reverse().map((round) => this.jackpotView(round)) };
+  async listJackpotHistory() {
+    return { rounds: (await this.store.roundHistory(HISTORY_LIMIT)).map((round) => this.jackpotView(round)) };
   }
 
   async enterJackpot(user: Caller, input: Record<string, unknown>) {
     const amount = this.stake(input.amount);
-    const round = this.jackpot;
+    const round = await this.jackpotRound();
     if (round.status !== "open" || (round.closesAt !== undefined && this.now() >= round.closesAt)) {
       throw new GameError("ROUND_CLOSING", "This round is being drawn. Join the next one.");
     }
@@ -450,73 +423,65 @@ export class GamesService {
     await this.wallet.move({
       id: `${round.id}:entry:${entryId}`,
       userId: user.id,
-      currency: this.config.currency,
+      currency: round.currency,
       amount: -amount,
       kind: "bet",
       ref: round.id,
     });
 
-    if (round.status !== "open") {
-      // The draw began while the stake was being taken. Give it back.
+    const updated = await this.store.addEntry(round.id, { user, amount }, this.now(), this.config.jackpotDurationMs);
+    if (!updated) {
+      // The round closed while the stake was being taken. Give it back.
       await this.wallet.move({
         id: `${round.id}:entry:${entryId}:refund`,
         userId: user.id,
-        currency: this.config.currency,
+        currency: round.currency,
         amount,
         kind: "refund",
         ref: round.id,
       });
       throw new GameError("ROUND_CLOSING", "This round is being drawn. Join the next one.");
     }
-
-    round.entries.push({ user, amount });
-    const players = new Set(round.entries.map((entry) => entry.user.id));
-    if (players.size >= 2 && round.closesAt === undefined) {
-      round.closesAt = this.now() + this.config.jackpotDurationMs;
-    }
-    return this.jackpotView(round);
+    return this.jackpotView(updated);
   }
 
-  /** Draws the current round if its time is up. Safe to call as often as you like. */
+  /**
+   * Draws the current round if its time is up, or finishes a draw that was
+   * interrupted. Safe to call as often as you like, from any instance: the
+   * result is fixed by the entries and the payout id, so it is paid once.
+   */
   async drawJackpotIfDue() {
-    const round = this.jackpot;
-    if (round.status !== "open" || round.closesAt === undefined || this.now() < round.closesAt) {
+    const current = await this.store.currentRound();
+    const round = current && (await this.store.claimDraw(current.id, this.now()));
+    if (!round) {
       return undefined;
     }
 
-    round.status = "drawing";
-    try {
-      const stakes = round.entries.map((entry) => ({ userId: entry.user.id, amount: entry.amount }));
-      const split = jackpotPayout(stakes, this.config.jackpotFeeBps);
-      // Public facts about the round, fixed once entries stop.
-      round.clientSeed = `${round.id}:${round.entries.length}:${split.pot}`;
-      round.winningTicket = await fairInt(
-        { serverSeed: round.serverSeed, clientSeed: round.clientSeed, nonce: 0 },
-        split.pot,
-      );
-      const winning = pickJackpotWinner(stakes, round.winningTicket);
-      round.winner = round.entries.find((entry) => entry.user.id === winning.userId)!.user;
-      round.prize = split.prize;
-      round.fee = split.fee;
+    const stakes = round.entries.map((entry) => ({ userId: entry.user.id, amount: entry.amount }));
+    const split = jackpotPayout(stakes, this.config.jackpotFeeBps);
+    // Public facts about the round, fixed once entries stop.
+    const clientSeed = `${round.id}:${round.entries.length}:${split.pot}`;
+    const winningTicket = await fairInt({ serverSeed: round.serverSeed, clientSeed, nonce: 0 }, split.pot);
+    const winning = pickJackpotWinner(stakes, winningTicket);
+    const winner = round.entries.find((entry) => entry.user.id === winning.userId)!.user;
+    await this.store.recordJackpotResult(round.id, { clientSeed, winningTicket, winner, prize: split.prize, fee: split.fee });
 
-      await this.wallet.move({
-        id: `${round.id}:prize`,
-        userId: round.winner.id,
-        currency: this.config.currency,
-        amount: split.prize,
-        kind: "win",
-        ref: round.id,
-      });
-    } catch (error) {
-      // Leave the round due, so the next call tries the draw again. The payout
-      // id is fixed, so a retry cannot pay twice.
-      round.status = "open";
-      throw error;
+    // If this fails the round stays in "drawing", and the next call pays it.
+    await this.wallet.move({
+      id: `${round.id}:prize`,
+      userId: winner.id,
+      currency: round.currency,
+      amount: split.prize,
+      kind: "win",
+      ref: round.id,
+    });
+
+    // Concurrent draws all pay the same prize id; only the one that settles reports the result.
+    const settledHere = await this.store.settleRound(round.id);
+    await this.jackpotRound();
+    if (!settledHere) {
+      return undefined;
     }
-
-    round.status = "settled";
-    this.jackpotHistory.push(round);
-    this.jackpot = await this.newJackpotRound();
-    return this.jackpotView(round);
+    return this.jackpotView({ ...round, status: "settled", clientSeed, winningTicket, winner, prize: split.prize, fee: split.fee });
   }
 }

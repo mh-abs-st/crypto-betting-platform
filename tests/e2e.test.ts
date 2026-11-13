@@ -7,6 +7,7 @@ import { fairInt, verifyCommitment } from "@yuubet/fair";
 import { buildAuthRouter } from "../services/auth/src/app";
 import { PgUserStore } from "../services/auth/src/pg-users";
 import { buildGamesRouter } from "../services/games/src/app";
+import { PgGamesStore } from "../services/games/src/pg-store";
 import { DEFAULT_GAMES_CONFIG, GamesService } from "../services/games/src/service";
 import { HttpWallet } from "../services/games/src/wallet";
 import { buildGatewayRouter } from "../services/gateway/src/app";
@@ -15,8 +16,8 @@ import { PgLedger } from "../services/wallet/src/pg-ledger";
 
 /**
  * Starts all four services on free ports and plays through the gateway,
- * the way the web app does. With TEST_DATABASE_URL set, accounts and
- * balances are kept in a fresh PostgreSQL database; otherwise in memory.
+ * the way the web app does. With TEST_DATABASE_URL set, all state is
+ * kept in a fresh PostgreSQL database; otherwise in memory.
  */
 const servers: Server[] = [];
 const urlOf = (server: Server) => `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -37,7 +38,7 @@ before(async () => {
   const service = await GamesService.create(new HttpWallet(walletUrl, internalKey), {
     ...DEFAULT_GAMES_CONFIG,
     now: () => clock,
-  });
+  }, db && new PgGamesStore(db.pool));
   const games = await buildGamesRouter(service, internalKey).listen(0, "127.0.0.1");
   const gateway = await buildGatewayRouter({
     jwtSecret,

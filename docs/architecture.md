@@ -49,11 +49,11 @@ Migrations are applied by `npm run db:migrate` (`packages/db`): each file runs i
 | --- | --- | --- | --- |
 | wallet | `LedgerStore` | `PgLedger`: one transaction per entry, with a row lock on the account | `MemoryLedger` |
 | auth | `UserStore` | `PgUserStore`: the unique index on `lower(username)` decides races for a name | `MemoryUserStore` |
-| games | `GamesService` | not yet (#5) | `GamesService` |
+| games | `GamesStore` | `PgGamesStore`: nonces, joins, cancels and draws are conditional updates, so several instances can share one database | `MemoryGamesStore` |
 
 ## Current limits
 
-- State is lost on restart, and a service cannot run as more than one instance.
+- Without `DATABASE_URL` state is lost on restart. Auth, wallet and games can run as several instances against one database.
 - No real deposits or withdrawals; only a development faucet.
 - If the wallet call that pays a prize fails in Roulette or Versus, the payout is not retried. Jackpot retries.
 - Clients poll for updates; there is no push channel yet.
