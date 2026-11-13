@@ -162,18 +162,14 @@ export function buildGamesRouter(service: GamesService, internalKey: string): Ro
         },
       },
     )
-    .post(
-      "/versus",
-      async (ctx) => new Reply(201, timed(await service.createVersus(player(ctx), bodyObject(ctx)))),
-      {
-        summary: "Open a match",
-        body: schema.object(
-          { amount: schema.amount, side: schema.text(8, "heads or tails"), clientSeed: schema.clientSeed },
-          ["amount", "side"],
-        ),
-        response: { 201: matchReply, 400: schema.errorReply, 409: schema.errorReply },
-      },
-    )
+    .post("/versus", async (ctx) => new Reply(201, timed(await service.createVersus(player(ctx), bodyObject(ctx)))), {
+      summary: "Open a match",
+      body: schema.object(
+        { amount: schema.amount, side: schema.text(8, "heads or tails"), clientSeed: schema.clientSeed },
+        ["amount", "side"],
+      ),
+      response: { 201: matchReply, 400: schema.errorReply, 409: schema.errorReply },
+    })
     .post("/versus/:id/join", (ctx) => service.joinVersus(player(ctx), ctx.params.id!, bodyObject(ctx)), {
       summary: "Join an open match; it is settled at once",
       params: matchId,

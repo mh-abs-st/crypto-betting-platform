@@ -249,7 +249,11 @@ export class Router {
     }
     const fastifyError = error as Partial<FastifyError>;
     if (fastifyError.validation) {
-      return new HttpError(400, "INVALID_REQUEST", `Invalid ${fastifyError.validationContext ?? "request"}: ${fastifyError.message}`);
+      return new HttpError(
+        400,
+        "INVALID_REQUEST",
+        `Invalid ${fastifyError.validationContext ?? "request"}: ${fastifyError.message}`,
+      );
     }
     if (fastifyError.code === "FST_ERR_CTP_BODY_TOO_LARGE") {
       return new HttpError(413, "BODY_TOO_LARGE", "Request body is too large");

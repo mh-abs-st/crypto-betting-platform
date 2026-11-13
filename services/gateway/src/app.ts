@@ -59,7 +59,10 @@ export function buildGatewayRouter(config: GatewayConfig): Router {
         },
         {
           summary: "The signed-in player",
-          response: { 200: schema.reply({ id: { type: "string" }, username: { type: "string" } }), 401: schema.errorReply },
+          response: {
+            200: schema.reply({ id: { type: "string" }, username: { type: "string" } }),
+            401: schema.errorReply,
+          },
         },
       )
       // Only a player's own wallet endpoints are reachable from outside.

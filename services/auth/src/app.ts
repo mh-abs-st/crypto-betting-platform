@@ -8,7 +8,10 @@ export interface AuthConfig {
 }
 
 const credentials = schema.object(
-  { username: schema.text(64, "3 to 20 letters, digits or underscores"), password: schema.text(1024, "8 to 128 characters") },
+  {
+    username: schema.text(64, "3 to 20 letters, digits or underscores"),
+    password: schema.text(1024, "8 to 128 characters"),
+  },
   ["username", "password"],
 );
 const sessionReply = schema.reply({
