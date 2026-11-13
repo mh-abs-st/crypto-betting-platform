@@ -17,4 +17,9 @@ export default tseslint.config(
       "no-restricted-globals": ["error", { name: "parseFloat", message: "Amounts are integers in smallest units." }],
     },
   },
+  {
+    // Tests read loosely typed JSON responses.
+    files: ["tests/**", "**/*.test.ts"],
+    rules: { "@typescript-eslint/no-explicit-any": "off" },
+  },
 );

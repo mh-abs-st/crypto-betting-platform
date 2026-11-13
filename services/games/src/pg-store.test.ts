@@ -15,7 +15,7 @@ const USDT = 1_000_000n;
 const player = (name: string) => ({ id: randomUUID(), name });
 
 let db: TestDatabase;
-let pools: Pool[] = [];
+const pools: Pool[] = [];
 let clock = 1_000_000;
 
 before(async () => {
