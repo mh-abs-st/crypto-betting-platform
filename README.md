@@ -11,7 +11,7 @@ A cryptocurrency betting platform built around provably fair games.
 - **Accounts**: sign up and sign in; passwords stored as salted scrypt hashes with their parameters; signed login tokens
 - **Wallet**: balances in whole smallest units, an append-only ledger, and transaction ids that make retries safe
 - **Roulette**: European wheel with straight, colour, odd/even, high/low, dozen and column bets
-- **Versus**: two players stake the same amount on opposite sides of a coin; winner takes the pot less a 2% fee
+- **Versus**: two players stake the same amount on opposite sides of a coin; winner takes the pot less a 2% fee. A match nobody joins within 30 minutes expires and is refunded; a player can have 5 open at once
 - **Jackpot**: players add to one pot; one winner, with a chance equal to their share; 5% fee
 - **Provably fair**: every result can be recomputed and checked by the player, in the browser
 - **Web client**: React app with a page per game and a fairness verifier

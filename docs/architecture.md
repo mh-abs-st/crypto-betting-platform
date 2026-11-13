@@ -53,7 +53,7 @@ Migrations are applied by `npm run db:migrate` (`packages/db`): each file runs i
 
 ## Money owed to players
 
-The games record every result before paying it, and mark the payment done only when the wallet confirms it (`payout_due_since` in `006_pending_payouts.sql`). If the wallet call fails, the player sees the result with the payout marked as pending, and `GamesService.retryPayouts`, run every five seconds on each instance, pays it. It also refunds cancelled matches whose refund failed and finishes Versus joins interrupted after the seat was taken. Every payment has a fixed id, so one that did go through is not made twice. Anything owed for more than five minutes is logged as an `ALERT` (metrics and paging come with #12). Jackpot draws retry the same way through `drawJackpotIfDue`.
+The games record every result before paying it, and mark the payment done only when the wallet confirms it (`payout_due_since` in `006_pending_payouts.sql`). If the wallet call fails, the player sees the result with the payout marked as pending, and `GamesService.retryPayouts`, run every five seconds on each instance, pays it. It also refunds cancelled and expired matches whose refund failed and finishes Versus joins interrupted after the seat was taken. Every payment has a fixed id, so one that did go through is not made twice. Anything owed for more than five minutes is logged as an `ALERT` (metrics and paging come with #12). Jackpot draws retry the same way through `drawJackpotIfDue`.
 
 ## Current limits
 

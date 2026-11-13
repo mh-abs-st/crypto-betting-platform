@@ -99,12 +99,14 @@ export interface RouletteSpin {
 export interface VersusMatch {
   id: string;
   stake: string;
-  status: "open" | "settled" | "cancelled";
+  status: "open" | "settled" | "cancelled" | "expired";
   /** A prize or refund is owed and will be paid automatically. */
   payoutPending: boolean;
   creator: Caller;
   creatorSide: "heads" | "tails";
   serverSeedHash: string;
+  /** An open match is cancelled and refunded automatically at this time. */
+  expiresAt: number;
   joiner?: Caller;
   result?: "heads" | "tails";
   winner?: Caller;
