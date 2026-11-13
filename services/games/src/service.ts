@@ -101,6 +101,11 @@ export class GamesService {
     return service;
   }
 
+  /** The server's clock, sent with every timed response so clients can correct for their own. */
+  time(): number {
+    return this.now();
+  }
+
   describe() {
     return {
       currency: this.config.currency,

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, type JackpotRound } from "../api";
+import { serverClock } from "../clock";
 import type { PageProps } from "../App";
 import { CURRENCY, blockUrl, formatAmount, percent, toUnits } from "../format";
 
@@ -8,7 +9,7 @@ export function JackpotPage({ session, refreshBalance }: PageProps) {
   const [history, setHistory] = useState<JackpotRound[]>([]);
   const [amount, setAmount] = useState("5");
   const [error, setError] = useState("");
-  const [now, setNow] = useState(Date.now());
+  const [now, setNow] = useState(() => serverClock.now());
   const token = session.token;
 
   const load = useCallback(() => {
@@ -31,7 +32,7 @@ export function JackpotPage({ session, refreshBalance }: PageProps) {
   useEffect(() => {
     load();
     const poll = setInterval(load, 2000);
-    const tick = setInterval(() => setNow(Date.now()), 500);
+    const tick = setInterval(() => setNow(serverClock.now()), 500);
     return () => {
       clearInterval(poll);
       clearInterval(tick);

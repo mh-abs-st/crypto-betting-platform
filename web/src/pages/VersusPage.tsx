@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, type VersusMatch } from "../api";
+import { serverClock } from "../clock";
 import type { PageProps } from "../App";
 import { CURRENCY, formatAmount, toUnits } from "../format";
 
@@ -86,7 +87,7 @@ export function VersusPage({ session, refreshBalance }: PageProps) {
                   {match.creator.name} on {match.creatorSide}
                 </span>
                 <span>{formatAmount(match.stake)}</span>
-                <span className="muted">{timeLeft(match.expiresAt - Date.now())}</span>
+                <span className="muted">{timeLeft(serverClock.until(match.expiresAt))}</span>
                 {mine ? (
                   <button className="link" onClick={() => act(`/games/versus/${match.id}/cancel`, {})}>
                     Cancel
