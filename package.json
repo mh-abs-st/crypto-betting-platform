@@ -8,7 +8,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "tsx --test \"packages/**/*.test.ts\" \"services/**/*.test.ts\" \"tests/**/*.test.ts\"",
+    "test": "tsx --test \"packages/**/*.test.ts\" \"services/**/*.test.ts\" \"tests/**/*.test.ts\" \"web/src/**/*.test.ts\"",
     "typecheck": "tsc --noEmit",
     "dev:auth": "tsx watch services/auth/src/main.ts",
     "dev:wallet": "tsx watch services/wallet/src/main.ts",
