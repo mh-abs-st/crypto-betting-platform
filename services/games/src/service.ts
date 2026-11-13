@@ -20,6 +20,7 @@ import {
   type Side,
 } from "@yuubet/games";
 import type { Caller } from "@yuubet/service-kit";
+import { BLOCKS_AHEAD, SimulatedChain, jackpotClientSeed, type EntropySource } from "./entropy";
 import { MemoryGamesStore, type GamesStore, type JackpotRound, type SeedPair, type VersusMatch } from "./store";
 import type { WalletPort } from "./wallet";
 
@@ -74,6 +75,7 @@ export class GamesService {
     private readonly wallet: WalletPort,
     private readonly config: GamesConfig,
     private readonly store: GamesStore,
+    private readonly entropy: EntropySource,
   ) {
     this.now = config.now ?? Date.now;
   }
@@ -82,8 +84,9 @@ export class GamesService {
     wallet: WalletPort,
     config: GamesConfig = DEFAULT_GAMES_CONFIG,
     store: GamesStore = new MemoryGamesStore(),
+    entropy: EntropySource = new SimulatedChain({ instant: true }),
   ): Promise<GamesService> {
-    const service = new GamesService(wallet, config, store);
+    const service = new GamesService(wallet, config, store, entropy);
     // Resumes the round that was open before a restart, or opens the first one.
     await service.jackpotRound();
     return service;
@@ -445,10 +448,12 @@ export class GamesService {
       id: round.id,
       number: round.number,
       currency: round.currency,
-      status: round.status === "drawing" ? "open" : round.status,
+      status: round.status,
       serverSeedHash: round.serverSeedHash,
       pot: jackpotPot(stakes),
       closesAt: round.closesAt,
+      /** The block whose hash the draw uses; the hash appears once the draw is done. */
+      entropy: round.entropy && { ...round.entropy, hash: settled ? round.entropy.hash : undefined },
       entries: round.entries.map((entry) => ({
         user: entry.user,
         amount: entry.amount,
@@ -506,25 +511,52 @@ export class GamesService {
   }
 
   /**
-   * Draws the current round if its time is up, or finishes a draw that was
-   * interrupted. Safe to call as often as you like, from any instance: the
-   * result is fixed by the entries and the payout id, so it is paid once.
+   * Draws the current round once it is due. Entries stop and the round
+   * commits to a block that does not exist yet; the draw happens when that
+   * block's hash is settled. Safe to call as often as you like, from any
+   * instance: the result is fixed by the entries, the seed and the block,
+   * and the payout id is fixed, so it is paid once.
+   *
+   * Returns the settled round, or undefined if nothing was settled by this call.
    */
   async drawJackpotIfDue() {
     const current = await this.store.currentRound();
-    const round = current && (await this.store.claimDraw(current.id, this.now()));
-    if (!round) {
+    if (!current) {
+      return undefined;
+    }
+    const due =
+      current.status === "drawing" || (current.closesAt !== undefined && this.now() >= current.closesAt);
+    if (!due) {
+      return undefined;
+    }
+    const commitment = { source: this.entropy.name, height: (await this.entropy.tip()) + BLOCKS_AHEAD };
+    const round = await this.store.claimDraw(current.id, this.now(), commitment);
+    if (!round?.entropy) {
+      return undefined;
+    }
+    if (round.entropy.source !== this.entropy.name) {
+      throw new Error(`Round ${round.id} committed to ${round.entropy.source}, but this instance reads ${this.entropy.name}`);
+    }
+    const blockHash = await this.entropy.settledHash(round.entropy.height);
+    if (!blockHash) {
+      // The committed block is not settled yet; a later call draws.
       return undefined;
     }
 
     const stakes = round.entries.map((entry) => ({ userId: entry.user.id, amount: entry.amount }));
     const split = jackpotPayout(stakes, this.config.jackpotFeeBps);
-    // Public facts about the round, fixed once entries stop.
-    const clientSeed = `${round.id}:${round.entries.length}:${split.pot}`;
+    const clientSeed = jackpotClientSeed(round.id, round.entries.length, split.pot, blockHash);
     const winningTicket = await fairInt({ serverSeed: round.serverSeed, clientSeed, nonce: 0 }, split.pot);
     const winning = pickJackpotWinner(stakes, winningTicket);
     const winner = round.entries.find((entry) => entry.user.id === winning.userId)!.user;
-    await this.store.recordJackpotResult(round.id, { clientSeed, winningTicket, winner, prize: split.prize, fee: split.fee });
+    await this.store.recordJackpotResult(round.id, {
+      clientSeed,
+      entropyHash: blockHash,
+      winningTicket,
+      winner,
+      prize: split.prize,
+      fee: split.fee,
+    });
 
     // If this fails the round stays in "drawing", and the next call pays it.
     await this.wallet.move({
@@ -542,7 +574,16 @@ export class GamesService {
     if (!settledHere) {
       return undefined;
     }
-    return this.jackpotView({ ...round, status: "settled", clientSeed, winningTicket, winner, prize: split.prize, fee: split.fee });
+    return this.jackpotView({
+      ...round,
+      status: "settled",
+      entropy: { ...round.entropy, hash: blockHash },
+      clientSeed,
+      winningTicket,
+      winner,
+      prize: split.prize,
+      fee: split.fee,
+    });
   }
 
   // ----- Money owed -----

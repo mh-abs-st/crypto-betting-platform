@@ -130,10 +130,16 @@ export function FairnessPage({ session }: PageProps) {
           </label>
         )}
         {game === "jackpot" && (
-          <label>
-            Pot, in smallest units
-            <input value={pot} onChange={(e) => setPot(e.target.value)} inputMode="numeric" />
-          </label>
+          <>
+            <label>
+              Pot, in smallest units
+              <input value={pot} onChange={(e) => setPot(e.target.value)} inputMode="numeric" />
+            </label>
+            <p className="muted">
+              The Jackpot client seed ends with the hash of the block the round committed to. Check that hash on a
+              block explorer: it was not known when entries closed.
+            </p>
+          </>
         )}
         <button className="primary" onClick={verify}>
           Verify

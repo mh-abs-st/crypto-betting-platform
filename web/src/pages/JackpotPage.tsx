@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, type JackpotRound } from "../api";
 import type { PageProps } from "../App";
-import { CURRENCY, formatAmount, percent, toUnits } from "../format";
+import { CURRENCY, blockUrl, formatAmount, percent, toUnits } from "../format";
 
 export function JackpotPage({ session, refreshBalance }: PageProps) {
   const [round, setRound] = useState<JackpotRound>();
@@ -63,11 +63,13 @@ export function JackpotPage({ session, refreshBalance }: PageProps) {
           {formatAmount(round?.pot)} <small>{CURRENCY}</small>
         </div>
         <p className="muted">
-          {secondsLeft === undefined
-            ? "The countdown starts when a second player joins."
-            : secondsLeft > 0
-              ? `Drawing in ${secondsLeft}s`
-              : "Drawing…"}
+          {round?.status === "drawing" && round.entropy
+            ? `Entries are closed. Waiting for ${round.entropy.source} block ${round.entropy.height}, whose hash decides the winner.`
+            : secondsLeft === undefined
+              ? "The countdown starts when a second player joins."
+              : secondsLeft > 0
+                ? `Drawing in ${secondsLeft}s`
+                : "Drawing…"}
         </p>
         <p className="muted">One winner takes the pot, less a 5% fee. Your chance equals your share of the pot.</p>
         <label className="inline">
@@ -103,6 +105,17 @@ export function JackpotPage({ session, refreshBalance }: PageProps) {
                 {past.winner?.name} won {formatAmount(past.prize)}
               </span>
               <span className="muted">pot {formatAmount(past.pot)}</span>
+              {past.entropy && (
+                <span className="muted">
+                  {blockUrl(past.entropy) ? (
+                    <a href={blockUrl(past.entropy)} target="_blank" rel="noreferrer">
+                      block {past.entropy.height}
+                    </a>
+                  ) : (
+                    `block ${past.entropy.height}`
+                  )}
+                </span>
+              )}
             </li>
           ))}
         </ul>

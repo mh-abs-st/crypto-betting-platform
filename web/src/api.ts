@@ -117,10 +117,13 @@ export interface VersusMatch {
 export interface JackpotRound {
   id: string;
   number: number;
-  status: "open" | "settled";
+  /** "drawing": entries are closed and the draw waits for the committed block. */
+  status: "open" | "drawing" | "settled";
   serverSeedHash: string;
   pot: string;
   closesAt?: number;
+  /** The block whose hash the draw uses. The hash is shown once the round is settled. */
+  entropy?: { source: string; height: number; hash?: string };
   entries: Array<{ user: Caller; amount: string; chanceBps: number }>;
   winner?: Caller;
   winningTicket?: string;
