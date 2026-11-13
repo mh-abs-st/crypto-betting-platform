@@ -43,6 +43,8 @@ export const DEFAULT_GAMES_CONFIG: GamesConfig = {
   jackpotDurationMs: 30_000,
 };
 
+type PayoutStatus = "none" | "paid" | "pending";
+
 const CLIENT_SEED = /^[A-Za-z0-9_-]{1,64}$/;
 const HISTORY_LIMIT = 20;
 
@@ -196,19 +198,14 @@ export class GamesService {
       totalPayout: settlement.totalPayout,
     });
 
+    let payoutStatus: PayoutStatus = "none";
     if (settlement.totalPayout > 0n) {
-      await this.wallet.move({
-        id: `${betId}:payout`,
-        userId: user.id,
-        currency,
-        amount: settlement.totalPayout,
-        kind: "win",
-        ref: betId,
-      });
+      payoutStatus = (await this.payRouletteSpin(betId, user.id, currency, settlement.totalPayout)) ? "paid" : "pending";
     }
 
     return {
       betId,
+      payoutStatus,
       currency,
       number: settlement.number,
       color: settlement.color,
@@ -225,15 +222,30 @@ export class GamesService {
     };
   }
 
+  /** Pays a recorded winning spin. False if the wallet failed; the payout stays owed and is retried. */
+  private async payRouletteSpin(betId: string, userId: string, currency: string, amount: bigint): Promise<boolean> {
+    try {
+      await this.wallet.move({ id: `${betId}:payout`, userId, currency, amount, kind: "win", ref: betId });
+    } catch (error) {
+      console.error(`roulette payout for ${betId} failed; it will be retried: ${(error as Error).message}`);
+      return false;
+    }
+    await this.store.markSpinPaid(betId);
+    return true;
+  }
+
   // ----- Versus -----
 
   private versusView(match: VersusMatch) {
-    const settled = match.status === "settled";
+    // Once the result is recorded the match is over for the players, even if the prize is still being paid.
+    const settled = match.status === "settled" || (match.status === "settling" && match.result !== undefined);
     return {
       id: match.id,
       currency: match.currency,
       stake: match.stake,
-      status: match.status === "settling" ? "open" : match.status,
+      status: settled ? "settled" : match.status === "settling" ? "open" : match.status,
+      /** A prize or refund is owed but the wallet has not confirmed it yet. */
+      payoutPending: match.payoutDueSince !== undefined,
       creator: match.creator,
       creatorSide: match.creatorSide,
       serverSeedHash: match.serverSeedHash,
@@ -318,26 +330,81 @@ export class GamesService {
     if (!match) {
       throw await this.refusal(id, user.id, "join");
     }
-    const currency = match.currency;
     try {
-      await this.wallet.move({ id: `${id}:joiner`, userId: user.id, currency, amount: -match.stake, kind: "bet", ref: id });
+      await this.takeJoinerStake(match);
     } catch (error) {
       await this.store.releaseJoin(id, user.id);
       throw error;
     }
+    await this.finishMatch(match);
+    return this.versusView((await this.store.getMatch(id))!);
+  }
 
+  private takeJoinerStake(match: VersusMatch) {
+    return this.wallet.move({
+      id: `${match.id}:joiner`,
+      userId: match.joiner!.id,
+      currency: match.currency,
+      amount: -match.stake,
+      kind: "bet",
+      ref: match.id,
+    });
+  }
+
+  /**
+   * Records the result of a match whose seat is taken and both stakes are in,
+   * then pays the prize. The result follows from the seeds alone, so running
+   * this again gives the same result and, with the fixed prize id, pays once.
+   */
+  private async finishMatch(match: VersusMatch) {
+    const joiner = match.joiner!;
     const roll = await fairInt(
-      { serverSeed: match.serverSeed, clientSeed: `${match.creatorSeed}:${joinerSeed}`, nonce: 0 },
+      { serverSeed: match.serverSeed, clientSeed: `${match.creatorSeed}:${match.joinerSeed}`, nonce: 0 },
       VERSUS_OUTCOMES,
     );
     const split = versusPayout(match.stake, this.config.versusFeeBps);
     const result = versusOutcome(roll);
-    const winner = result === match.creatorSide ? match.creator : user;
-    await this.store.recordVersusResult(id, { result, winner, prize: split.prize, fee: split.fee });
+    const winner = result === match.creatorSide ? match.creator : joiner;
+    await this.store.recordVersusResult(match.id, { result, winner, prize: split.prize, fee: split.fee });
+    await this.payVersusPrize({ ...match, result, winner, prize: split.prize, fee: split.fee });
+  }
 
-    await this.wallet.move({ id: `${id}:prize`, userId: winner.id, currency, amount: split.prize, kind: "win", ref: id });
-    await this.store.markSettled(id);
-    return this.versusView((await this.store.getMatch(id))!);
+  /** Pays a recorded prize. False if the wallet failed; the prize stays owed and is retried. */
+  private async payVersusPrize(match: VersusMatch): Promise<boolean> {
+    try {
+      await this.wallet.move({
+        id: `${match.id}:prize`,
+        userId: match.winner!.id,
+        currency: match.currency,
+        amount: match.prize!,
+        kind: "win",
+        ref: match.id,
+      });
+    } catch (error) {
+      console.error(`versus prize for ${match.id} failed; it will be retried: ${(error as Error).message}`);
+      return false;
+    }
+    await this.store.markSettled(match.id);
+    return true;
+  }
+
+  /** Refunds a cancelled match. False if the wallet failed; the refund stays owed and is retried. */
+  private async refundVersus(match: VersusMatch): Promise<boolean> {
+    try {
+      await this.wallet.move({
+        id: `${match.id}:refund`,
+        userId: match.creator.id,
+        currency: match.currency,
+        amount: match.stake,
+        kind: "refund",
+        ref: match.id,
+      });
+    } catch (error) {
+      console.error(`versus refund for ${match.id} failed; it will be retried: ${(error as Error).message}`);
+      return false;
+    }
+    await this.store.markRefunded(match.id);
+    return true;
   }
 
   async cancelVersus(user: Caller, id: string) {
@@ -345,15 +412,8 @@ export class GamesService {
     if (!match) {
       throw await this.refusal(id, user.id, "cancel");
     }
-    await this.wallet.move({
-      id: `${id}:refund`,
-      userId: user.id,
-      currency: match.currency,
-      amount: match.stake,
-      kind: "refund",
-      ref: id,
-    });
-    return this.versusView(match);
+    const refunded = await this.refundVersus(match);
+    return this.versusView({ ...match, payoutDueSince: refunded ? undefined : match.payoutDueSince });
   }
 
   /** The side a joiner would be playing. */
@@ -483,5 +543,62 @@ export class GamesService {
       return undefined;
     }
     return this.jackpotView({ ...round, status: "settled", clientSeed, winningTicket, winner, prize: split.prize, fee: split.fee });
+  }
+
+  // ----- Money owed -----
+
+  /**
+   * Pays everything that is owed but not confirmed: Roulette payouts, Versus
+   * prizes and refunds, and Versus joins interrupted before a result was
+   * recorded. Every payment has a fixed id, so a payment that did go through
+   * is not made again. Safe to call often and from every instance.
+   *
+   * `minAgeMs` leaves recent payments to the request that is making them;
+   * anything owed for longer than `alertAfterMs` is logged as an error.
+   */
+  async retryPayouts({ minAgeMs = 5_000, alertAfterMs = 5 * 60_000 } = {}) {
+    const due = await this.store.duePayouts(minAgeMs);
+    const now = Date.now();
+    let paid = 0;
+    let pending = 0;
+    const done = (ok: boolean, what: string, since?: number) => {
+      if (ok) {
+        paid += 1;
+        return;
+      }
+      pending += 1;
+      if (since !== undefined && now - since > alertAfterMs) {
+        console.error(`ALERT: ${what} has been owed for ${Math.round((now - since) / 1000)}s`);
+      }
+    };
+
+    for (const spin of due.spins) {
+      done(await this.payRouletteSpin(spin.id, spin.userId, spin.currency, spin.totalPayout), `roulette payout ${spin.id}`, spin.payoutDueSince);
+    }
+    for (const match of due.prizes) {
+      done(await this.payVersusPrize(match), `versus prize ${match.id}`, match.payoutDueSince);
+    }
+    for (const match of due.refunds) {
+      done(await this.refundVersus(match), `versus refund ${match.id}`, match.payoutDueSince);
+    }
+    for (const match of due.stalledJoins) {
+      // The join stopped after the seat was taken. Take the joiner's stake (a
+      // no-op if it was taken before) and finish the match; if the joiner can
+      // no longer pay, give the seat back.
+      try {
+        await this.takeJoinerStake(match);
+      } catch (error) {
+        if ((error as { code?: string }).code === "INSUFFICIENT_FUNDS") {
+          await this.store.releaseJoin(match.id, match.joiner!.id);
+          continue;
+        }
+        done(false, `versus join ${match.id}`, match.joinedAt);
+        continue;
+      }
+      await this.finishMatch(match);
+      const after = await this.store.getMatch(match.id);
+      done(after?.status === "settled", `versus prize ${match.id}`, match.joinedAt);
+    }
+    return { paid, pending };
   }
 }

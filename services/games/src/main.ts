@@ -24,3 +24,8 @@ console.log(`games service listening on ${port}${databaseUrl ? "" : " (in memory
 setInterval(() => {
   service.drawJackpotIfDue().catch((error) => console.error("jackpot draw failed", error));
 }, 1000);
+
+// Pay anything owed whose first payment failed, for example while the wallet was down.
+setInterval(() => {
+  service.retryPayouts().catch((error) => console.error("payout retry failed", error));
+}, 5000);

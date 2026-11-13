@@ -104,6 +104,7 @@ export function VersusPage({ session, refreshBalance }: PageProps) {
               </span>
               <span className={match.winner?.id === session.user.id ? "win" : ""}>
                 {match.winner?.name} won {formatAmount(match.prize)}
+                {match.payoutPending && " (being paid)"}
               </span>
             </li>
           ))}

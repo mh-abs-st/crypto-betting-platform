@@ -51,11 +51,14 @@ Migrations are applied by `npm run db:migrate` (`packages/db`): each file runs i
 | auth | `UserStore` | `PgUserStore`: the unique index on `lower(username)` decides races for a name | `MemoryUserStore` |
 | games | `GamesStore` | `PgGamesStore`: nonces, joins, cancels and draws are conditional updates, so several instances can share one database | `MemoryGamesStore` |
 
+## Money owed to players
+
+The games record every result before paying it, and mark the payment done only when the wallet confirms it (`payout_due_since` in `006_pending_payouts.sql`). If the wallet call fails, the player sees the result with the payout marked as pending, and `GamesService.retryPayouts`, run every five seconds on each instance, pays it. It also refunds cancelled matches whose refund failed and finishes Versus joins interrupted after the seat was taken. Every payment has a fixed id, so one that did go through is not made twice. Anything owed for more than five minutes is logged as an `ALERT` (metrics and paging come with #12). Jackpot draws retry the same way through `drawJackpotIfDue`.
+
 ## Current limits
 
 - Without `DATABASE_URL` state is lost on restart. Auth, wallet and games can run as several instances against one database.
 - No real deposits or withdrawals; only a development faucet.
-- If the wallet call that pays a prize fails in Roulette or Versus, the payout is not retried. Jackpot retries.
 - Clients poll for updates; there is no push channel yet.
 - The HTTP layer is a small router on `node:http`, with no rate limiting.
 - No admin tools, KYC, limits or responsible-gambling controls.

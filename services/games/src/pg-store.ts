@@ -1,7 +1,8 @@
 import { isUniqueViolation, transaction, type Pool, type Queryable } from "@yuubet/db";
-import type { Side } from "@yuubet/games";
+import type { RouletteBet, Side } from "@yuubet/games";
 import type { Caller } from "@yuubet/service-kit";
 import type {
+  DuePayouts,
   GamesStore,
   JackpotEntry,
   JackpotResult,
@@ -56,6 +57,8 @@ interface MatchRow {
   prize: string | null;
   fee: string | null;
   created_at: Date;
+  joined_at: Date | null;
+  payout_due_since: Date | null;
 }
 
 function toMatch(row: MatchRow): VersusMatch {
@@ -78,8 +81,36 @@ function toMatch(row: MatchRow): VersusMatch {
     winner: row.winner_id ? (row.winner_id === creator.id ? creator : joiner) : undefined,
     prize: row.prize === null ? undefined : BigInt(row.prize),
     fee: row.fee === null ? undefined : BigInt(row.fee),
+    joinedAt: row.joined_at?.getTime(),
+    payoutDueSince: row.payout_due_since?.getTime(),
   };
 }
+
+interface SpinRow {
+  id: string;
+  user_id: string;
+  seed_pair_id: string;
+  nonce: string;
+  currency: string;
+  bets: Array<{ type: RouletteBet["type"]; value?: number; amount: string }>;
+  number: number;
+  total_stake: string;
+  total_payout: string;
+  payout_due_since: Date | null;
+}
+
+const toSpin = (row: SpinRow): RouletteSpin => ({
+  id: row.id,
+  userId: row.user_id,
+  seedPairId: row.seed_pair_id,
+  nonce: Number(row.nonce),
+  currency: row.currency,
+  bets: row.bets.map((bet) => ({ ...bet, amount: BigInt(bet.amount) })),
+  number: row.number,
+  totalStake: BigInt(row.total_stake),
+  totalPayout: BigInt(row.total_payout),
+  payoutDueSince: row.payout_due_since?.getTime(),
+});
 
 interface RoundRow {
   id: string;
@@ -169,8 +200,9 @@ export class PgGamesStore implements GamesStore {
 
   async recordSpin(spin: RouletteSpin) {
     await this.pool.query(
-      `INSERT INTO games.roulette_spins (id, user_id, seed_pair_id, nonce, currency, bets, number, total_stake, total_payout)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      `INSERT INTO games.roulette_spins
+         (id, user_id, seed_pair_id, nonce, currency, bets, number, total_stake, total_payout, payout_due_since)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CASE WHEN $9::numeric > 0 THEN now() END)`,
       [
         spin.id,
         spin.userId,
@@ -183,6 +215,10 @@ export class PgGamesStore implements GamesStore {
         spin.totalPayout.toString(),
       ],
     );
+  }
+
+  async markSpinPaid(id: string) {
+    await this.pool.query("UPDATE games.roulette_spins SET payout_due_since = NULL WHERE id = $1", [id]);
   }
 
   // ----- Versus -----
@@ -218,10 +254,14 @@ export class PgGamesStore implements GamesStore {
 
   async listMatches(limit: number) {
     const open = await this.pool.query<MatchRow>(
-      "SELECT * FROM games.versus_matches WHERE status IN ('open', 'settling') ORDER BY created_at DESC, id",
+      `SELECT * FROM games.versus_matches
+       WHERE status = 'open' OR (status = 'settling' AND result IS NULL)
+       ORDER BY created_at DESC, id`,
     );
     const recent = await this.pool.query<MatchRow>(
-      "SELECT * FROM games.versus_matches WHERE status = 'settled' ORDER BY settled_at DESC, id LIMIT $1",
+      `SELECT * FROM games.versus_matches
+       WHERE status = 'settled' OR (status = 'settling' AND result IS NOT NULL)
+       ORDER BY coalesce(settled_at, joined_at) DESC, id LIMIT $1`,
       [limit],
     );
     return { open: open.rows.map(toMatch), recent: recent.rows.map(toMatch) };
@@ -232,7 +272,7 @@ export class PgGamesStore implements GamesStore {
       return undefined;
     }
     const { rows } = await this.pool.query<MatchRow>(
-      `UPDATE games.versus_matches SET status = 'settling', joiner_id = $2, joiner_name = $3, joiner_seed = $4
+      `UPDATE games.versus_matches SET status = 'settling', joiner_id = $2, joiner_name = $3, joiner_seed = $4, joined_at = now()
        WHERE id = $1 AND status = 'open' AND creator_id <> $2
        RETURNING *`,
       [id, joiner.id, joiner.name, joinerSeed],
@@ -242,7 +282,7 @@ export class PgGamesStore implements GamesStore {
 
   async releaseJoin(id: string, joinerId: string) {
     await this.pool.query(
-      `UPDATE games.versus_matches SET status = 'open', joiner_id = NULL, joiner_name = NULL, joiner_seed = NULL
+      `UPDATE games.versus_matches SET status = 'open', joiner_id = NULL, joiner_name = NULL, joiner_seed = NULL, joined_at = NULL
        WHERE id = $1 AND status = 'settling' AND joiner_id = $2 AND result IS NULL`,
       [id, joinerId],
     );
@@ -250,15 +290,16 @@ export class PgGamesStore implements GamesStore {
 
   async recordVersusResult(id: string, result: VersusResult) {
     await this.pool.query(
-      `UPDATE games.versus_matches SET result = $2, winner_id = $3, prize = $4, fee = $5
-       WHERE id = $1 AND status = 'settling'`,
+      `UPDATE games.versus_matches SET result = $2, winner_id = $3, prize = $4, fee = $5, payout_due_since = now()
+       WHERE id = $1 AND status = 'settling' AND result IS NULL`,
       [id, result.result, result.winner.id, result.prize.toString(), result.fee.toString()],
     );
   }
 
   async markSettled(id: string) {
     await this.pool.query(
-      "UPDATE games.versus_matches SET status = 'settled', settled_at = now() WHERE id = $1 AND status = 'settling'",
+      `UPDATE games.versus_matches SET status = 'settled', settled_at = now(), payout_due_since = NULL
+       WHERE id = $1 AND status = 'settling' AND result IS NOT NULL`,
       [id],
     );
   }
@@ -268,12 +309,38 @@ export class PgGamesStore implements GamesStore {
       return undefined;
     }
     const { rows } = await this.pool.query<MatchRow>(
-      `UPDATE games.versus_matches SET status = 'cancelled', settled_at = now()
+      `UPDATE games.versus_matches SET status = 'cancelled', settled_at = now(), payout_due_since = now()
        WHERE id = $1 AND status = 'open' AND creator_id = $2
        RETURNING *`,
       [id, creatorId],
     );
     return rows[0] && toMatch(rows[0]);
+  }
+
+  async markRefunded(id: string) {
+    await this.pool.query("UPDATE games.versus_matches SET payout_due_since = NULL WHERE id = $1 AND status = 'cancelled'", [id]);
+  }
+
+  async duePayouts(minAgeMs: number): Promise<DuePayouts> {
+    const cutoff = [`${Math.max(0, Math.floor(minAgeMs))} milliseconds`];
+    const spins = await this.pool.query<SpinRow>(
+      "SELECT * FROM games.roulette_spins WHERE payout_due_since <= now() - $1::interval ORDER BY payout_due_since",
+      cutoff,
+    );
+    const matches = await this.pool.query<MatchRow>(
+      `SELECT * FROM games.versus_matches
+       WHERE payout_due_since <= now() - $1::interval
+          OR (status = 'settling' AND result IS NULL AND joined_at <= now() - $1::interval)
+       ORDER BY created_at`,
+      cutoff,
+    );
+    const all = matches.rows.map(toMatch);
+    return {
+      spins: spins.rows.map(toSpin),
+      prizes: all.filter((m) => m.status === "settling" && m.result !== undefined && m.payoutDueSince !== undefined),
+      refunds: all.filter((m) => m.status === "cancelled" && m.payoutDueSince !== undefined),
+      stalledJoins: all.filter((m) => m.status === "settling" && m.result === undefined),
+    };
   }
 
   // ----- Jackpot -----

@@ -25,8 +25,9 @@ async function setup(overrides = {}) {
   }
   let clock = 1_000_000;
   const config = { ...DEFAULT_GAMES_CONFIG, now: () => clock, ...overrides };
-  const service = await GamesService.create(wallet, config, await makeStore());
-  return { wallet, service, config, advance: (ms: number) => (clock += ms) };
+  const store = await makeStore();
+  const service = await GamesService.create(wallet, config, store);
+  return { wallet, service, store, config, advance: (ms: number) => (clock += ms) };
 }
 
 /** Every game rule must hold with each store. */
@@ -236,6 +237,111 @@ function games(label: string, store: () => Promise<GamesStore>, skip: string | f
     const [first, second] = await Promise.all([service.drawJackpotIfDue(), service.drawJackpotIfDue()]);
     assert.equal([first, second].filter(Boolean).length, 1, "concurrent draws settle the round once");
     assert.equal(wallet.moves.filter((move) => move.kind === "win").length, 1);
+  });
+
+  test("payouts: a failed roulette payout is reported as pending and paid once by the retry", async () => {
+    const { wallet, service } = await setup({ minBet: 1n });
+    // A straight bet on every pocket always wins exactly once: stake 37, payout 36.
+    const bets = Array.from({ length: 37 }, (_, value) => ({ type: "straight", value, amount: "1" }));
+    wallet.failNext = "win";
+    const spin = await service.spinRoulette(ann, { bets });
+    assert.equal(spin.payoutStatus, "pending");
+    assert.equal(spin.totalPayout, 36n);
+    assert.equal(wallet.balance(ann.id), 100n * USDT - 37n);
+
+    assert.deepEqual(await service.retryPayouts({ minAgeMs: 0 }), { paid: 1, pending: 0 });
+    assert.equal(wallet.balance(ann.id), 100n * USDT - 1n);
+    assert.deepEqual(await service.retryPayouts({ minAgeMs: 0 }), { paid: 0, pending: 0 });
+    assert.equal(wallet.moves.filter((move) => move.kind === "win").length, 1);
+
+    const paid = await service.spinRoulette(ann, { bets });
+    assert.equal(paid.payoutStatus, "paid");
+    const lost = await service.spinRoulette(ann, { bets: [{ type: "straight", value: (paid.number + 1) % 37, amount: "1" }] });
+    assert.equal(lost.payoutStatus, lost.totalPayout > 0n ? "paid" : "none");
+  });
+
+  test("payouts: a retry leaves a payout alone while it is still young", async () => {
+    const { wallet, service } = await setup({ minBet: 1n });
+    const bets = Array.from({ length: 37 }, (_, value) => ({ type: "straight", value, amount: "1" }));
+    wallet.failNext = "win";
+    await service.spinRoulette(ann, { bets });
+    assert.deepEqual(await service.retryPayouts({ minAgeMs: 60_000 }), { paid: 0, pending: 0 });
+  });
+
+  test("payouts: a failed Versus prize shows the result as being paid, and the retry settles it", async () => {
+    const { wallet, service } = await setup();
+    const match = await service.createVersus(ann, { amount: String(10n * USDT), side: "heads" });
+    wallet.failNext = "win";
+    const joined = await service.joinVersus(bob, match.id, {});
+    assert.equal(joined.status, "settled");
+    assert.equal(joined.payoutPending, true);
+    assert.ok(joined.winner && joined.serverSeed);
+    const lobby = await service.listVersus();
+    assert.equal(lobby.open.length, 0);
+    assert.deepEqual(lobby.recent.map((m) => [m.id, m.payoutPending]), [[match.id, true]]);
+    assert.equal(wallet.total(), 300n * USDT - 20n * USDT);
+
+    assert.deepEqual(await service.retryPayouts({ minAgeMs: 0 }), { paid: 1, pending: 0 });
+    assert.equal(wallet.total(), 300n * USDT - joined.fee!);
+    assert.equal(wallet.balance(joined.winner!.id), 90n * USDT + joined.prize!);
+    assert.deepEqual((await service.listVersus()).recent.map((m) => [m.id, m.payoutPending]), [[match.id, false]]);
+    assert.deepEqual(await service.retryPayouts({ minAgeMs: 0 }), { paid: 0, pending: 0 });
+  });
+
+  test("payouts: a failed refund is retried until the creator has their stake back", async () => {
+    const { wallet, service } = await setup();
+    const match = await service.createVersus(ann, { amount: String(10n * USDT), side: "tails" });
+    wallet.failNext = "refund";
+    const cancelled = await service.cancelVersus(ann, match.id);
+    assert.deepEqual([cancelled.status, cancelled.payoutPending], ["cancelled", true]);
+    assert.equal(wallet.balance(ann.id), 90n * USDT);
+    await assert.rejects(service.cancelVersus(ann, match.id), { code: "MATCH_CLOSED" });
+
+    wallet.failNext = "refund";
+    assert.deepEqual(await service.retryPayouts({ minAgeMs: 0 }), { paid: 0, pending: 1 });
+    assert.deepEqual(await service.retryPayouts({ minAgeMs: 0 }), { paid: 1, pending: 0 });
+    assert.equal(wallet.balance(ann.id), 100n * USDT);
+    assert.deepEqual(await service.retryPayouts({ minAgeMs: 0 }), { paid: 0, pending: 0 });
+  });
+
+  test("payouts: a join interrupted after the seat was taken is finished, or undone if the joiner cannot pay", async () => {
+    const { wallet, service, store } = await setup();
+    const first = await service.createVersus(ann, { amount: String(10n * USDT), side: "heads" });
+    const second = await service.createVersus(ann, { amount: String(10n * USDT), side: "heads" });
+    // As if the process stopped right after taking each seat.
+    await store.claimJoin(first.id, bob, "bob-seed");
+    await store.claimJoin(second.id, cat, "cat-seed");
+    wallet.balances.set(cat.id, USDT);
+
+    assert.deepEqual(await service.retryPayouts({ minAgeMs: 0 }), { paid: 1, pending: 0 });
+    const lobby = await service.listVersus();
+    assert.deepEqual(lobby.open.map((m) => m.id), [second.id], "the seat cat could not pay for is free again");
+    const settled = lobby.recent.find((m) => m.id === first.id)!;
+    assert.equal(settled.status, "settled");
+    assert.equal(settled.joiner!.id, bob.id);
+    assert.ok(settled.clientSeed!.endsWith(":bob-seed"));
+    assert.deepEqual(wallet.moves.filter((m) => m.ref === first.id).map((m) => m.id.split(":")[1]), ["creator", "joiner", "prize"]);
+    assert.equal(wallet.moves.filter((m) => m.userId === cat.id).length, 0);
+    const bobWon = settled.winner!.id === bob.id;
+    assert.equal(wallet.balance(bob.id), 90n * USDT + (bobWon ? settled.prize! : 0n));
+    assert.equal(wallet.balance(ann.id), 80n * USDT + (bobWon ? 0n : settled.prize!));
+  });
+
+  test("stakes: a wallet failure when taking any stake leaves nothing behind", async () => {
+    const { wallet, service } = await setup();
+    for (const attempt of [
+      () => service.spinRoulette(ann, { bets: [{ type: "red", amount: String(USDT) }] }),
+      () => service.createVersus(ann, { amount: String(USDT), side: "heads" }),
+      () => service.enterJackpot(ann, { amount: String(USDT) }),
+    ]) {
+      wallet.failNext = "bet";
+      await assert.rejects(attempt(), /wallet is down/);
+    }
+    assert.equal(wallet.moves.length, 0);
+    assert.equal((await service.listVersus()).open.length, 0);
+    assert.equal((await service.currentJackpot()).entries.length, 0);
+    assert.equal((await service.seedInfo(ann.id)).nonce, 0);
+    assert.deepEqual(await service.retryPayouts({ minAgeMs: 0 }), { paid: 0, pending: 0 });
   });
 
   test("jackpot: stake share decides the winner over many rounds", async () => {
