@@ -62,6 +62,12 @@ jobs:
         run: npm run db:migrate && npm run db:migrate
       - name: Test, including PostgreSQL
         run: npm test
+      - name: Generate the API description
+        run: npm run docs:api
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openapi
+          path: docs/api/
 
   web:
     name: Build the web client

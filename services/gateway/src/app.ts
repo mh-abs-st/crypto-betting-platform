@@ -1,4 +1,4 @@
-import { HttpError, Router, forward, verifyToken, type Caller, type RequestContext } from "@yuubet/service-kit";
+import { HttpError, Router, forward, schema, verifyToken, type Caller, type RequestContext } from "@yuubet/service-kit";
 
 export interface GatewayConfig {
   jwtSecret: string;
@@ -40,15 +40,31 @@ export function buildGatewayRouter(config: GatewayConfig): Router {
     });
   };
 
+  const credentials = {
+    body: schema.object({ username: schema.text(64), password: schema.text(1024) }, ["username", "password"]),
+  };
+
+  // The routes under /api/wallet/me and /api/games are passed through and
+  // validated by the service that owns them; see each service's /openapi.json.
   return (
-    new Router({ corsOrigin: config.webOrigin })
-      .get("/health", () => ({ ok: true }))
-      .post("/api/auth/register", pass(config.authUrl, "/register"))
-      .post("/api/auth/login", pass(config.authUrl, "/login"))
-      .get("/api/auth/me", (ctx) => {
-        const user = authenticate(ctx);
-        return { id: user.id, username: user.name };
-      })
+    new Router({ corsOrigin: config.webOrigin, title: "YuuBet public API (gateway)" })
+      .get("/health", () => ({ ok: true }), { response: { 200: schema.ok } })
+      .post("/api/auth/register", pass(config.authUrl, "/register"), { summary: "Create an account", ...credentials })
+      .post("/api/auth/login", pass(config.authUrl, "/login"), { summary: "Sign in", ...credentials })
+      .get(
+        "/api/auth/me",
+        (ctx) => {
+          const user = authenticate(ctx);
+          return { id: user.id, username: user.name };
+        },
+        {
+          summary: "The signed-in player",
+          response: {
+            200: schema.reply({ id: { type: "string" }, username: { type: "string" } }),
+            401: schema.errorReply,
+          },
+        },
+      )
       // Only a player's own wallet endpoints are reachable from outside.
       .add("*", "/api/wallet/me/*", pass(config.walletUrl, "/me/", authenticate))
       .add("*", "/api/games/*", pass(config.gamesUrl, "/", authenticate))

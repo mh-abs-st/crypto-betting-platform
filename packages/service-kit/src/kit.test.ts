@@ -10,6 +10,7 @@ import {
   forward,
   requireInternal,
   requireUser,
+  schema,
   signToken,
   verifyToken,
 } from "./index";
@@ -17,7 +18,9 @@ import {
 class Refused extends Error {}
 
 let baseUrl = "";
+let internalUrl = "";
 let closeServer: () => void = () => {};
+let closeInternal: () => void = () => {};
 
 before(async () => {
   const router = new Router({ logError: () => {} })
@@ -39,9 +42,51 @@ before(async () => {
   const server = await router.listen(0, "127.0.0.1");
   baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   closeServer = () => server.close();
+
+  const internal = await new Router({ internalKey: "key-123", logError: () => {} })
+    .get("/health", () => ({ ok: true }))
+    .post("/strict", (ctx) => ({ got: bodyObject(ctx) }), {
+      body: schema.object({ amount: schema.amount, note: schema.text(5) }, ["amount"]),
+    })
+    .listen(0, "127.0.0.1");
+  internalUrl = `http://127.0.0.1:${(internal.address() as AddressInfo).port}`;
+  closeInternal = () => internal.close();
 });
 
-after(() => closeServer());
+after(() => {
+  closeServer();
+  closeInternal();
+});
+
+test("schemas reject requests of the wrong shape before the handler runs", async () => {
+  const post = (body: unknown) =>
+    fetch(`${internalUrl}/strict`, {
+      method: "POST",
+      headers: { "x-internal-key": "key-123", "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  assert.deepEqual(await (await post({ amount: "5", note: "hi" })).json(), { got: { amount: "5", note: "hi" } });
+  for (const bad of [{}, { amount: 5 }, { amount: "5", note: "too long" }, { amount: "5", extra: true }, [1]]) {
+    const response = await post(bad);
+    assert.equal(response.status, 400, JSON.stringify(bad));
+    assert.equal(((await response.json()) as { error: { code: string } }).error.code, "INVALID_REQUEST");
+  }
+});
+
+test("a router with an internal key refuses requests without it, before validating them", async () => {
+  const response = await fetch(`${internalUrl}/strict`, { method: "POST", body: "{}" });
+  assert.equal(response.status, 401);
+  assert.equal((await fetch(`${internalUrl}/health`)).status, 200);
+});
+
+test("the OpenAPI description lists the routes and their schemas", async () => {
+  const document = (await (await fetch(`${internalUrl}/openapi.json`)).json()) as {
+    openapi: string;
+    paths: Record<string, Record<string, { requestBody?: unknown }>>;
+  };
+  assert.match(document.openapi, /^3\./);
+  assert.ok(document.paths["/strict"]?.post?.requestBody);
+});
 
 test("routes match params, query strings and wildcards", async () => {
   const hello = await fetch(`${baseUrl}/hello/ann%20b?shout=yes`);
