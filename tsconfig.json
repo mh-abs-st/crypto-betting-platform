@@ -11,6 +11,8 @@
     "skipLibCheck": true,
     "esModuleInterop": true,
     "paths": {
+      "@yuubet/db": ["./packages/db/src/index.ts"],
+      "@yuubet/db/testing": ["./packages/db/src/testing.ts"],
       "@yuubet/fair": ["./packages/fair/src/index.ts"],
       "@yuubet/games": ["./packages/games/src/index.ts"],
       "@yuubet/service-kit": ["./packages/service-kit/src/index.ts"]

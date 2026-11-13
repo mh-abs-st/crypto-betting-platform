@@ -39,7 +39,7 @@ npm run dev:web
 
 Open http://localhost:5173, create an account, and press **Get play money**. The services read their settings from the environment; the defaults match `.env.example`. Set `DEV_FAUCET=true` for the wallet service to enable play money.
 
-The PostgreSQL schema is in `db/migrations`. `docker compose up -d` starts a database with it applied. The services do not use it yet.
+The PostgreSQL schema is in `db/migrations`. `docker compose up -d` starts a database; `npm run db:migrate` applies the migrations and records them in `public.schema_migrations`. With `TEST_DATABASE_URL` set, `npm test` also runs the PostgreSQL tests, each file in a fresh database.
 
 ## Layout
 
@@ -47,13 +47,14 @@ The PostgreSQL schema is in `db/migrations`. `docker compose up -d` starts a dat
 | --- | --- |
 | `packages/fair` | Provably fair random numbers. Runs in Node and in the browser. |
 | `packages/games` | Game rules as pure functions: roulette, versus, jackpot, money. |
+| `packages/db` | PostgreSQL pool, transactions with retries, migration runner, test databases. |
 | `packages/service-kit` | Shared HTTP router, login tokens and config helpers for the services. |
 | `services/gateway` | The only public entry point. Checks tokens and routes to services. |
 | `services/auth` | Accounts and sign-in. |
 | `services/wallet` | Balances and the ledger. |
 | `services/games` | The three games. |
 | `web` | React front end. |
-| `db/migrations` | PostgreSQL schema, one schema per service. |
+| `db/migrations` | PostgreSQL schema, one schema per service, and a role per service. |
 | `tests` | End-to-end test that plays through the gateway. |
 
 See [`docs/architecture.md`](docs/architecture.md) for the design and [`docs/provably-fair.md`](docs/provably-fair.md) for how results are generated and verified.

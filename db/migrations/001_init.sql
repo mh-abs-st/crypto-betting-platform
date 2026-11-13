@@ -5,8 +5,8 @@
 --
 -- Amounts are whole numbers of the currency's smallest unit (NUMERIC(40,0)),
 -- never floating point.
-
-BEGIN;
+--
+-- Apply with `npm run db:migrate`, which runs each file in a transaction.
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
@@ -139,5 +139,3 @@ CREATE TABLE games.jackpot_entries (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (round_id, position)
 );
-
-COMMIT;

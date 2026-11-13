@@ -39,7 +39,9 @@ The wallet's `/internal/transactions` endpoint moves money. It is called only by
 
 ## Data
 
-`db/migrations/001_init.sql` defines one schema per service: `auth`, `wallet` and `games`. A service reads and writes only its own schema. Constraints enforce the important rules in the database too: non-negative balances, one active seed pair per player, one open jackpot round.
+`db/migrations/001_init.sql` defines one schema per service: `auth`, `wallet` and `games`. A service reads and writes only its own schema, and `002_service_roles.sql` enforces this with a group role per service (`yuubet_auth`, `yuubet_wallet`, `yuubet_games`). The wallet role may insert ledger entries but never update or delete them. Each environment creates one login role per service as a member of its group role.
+
+Migrations are applied by `npm run db:migrate` (`packages/db`): each file runs in its own transaction, is recorded in `public.schema_migrations` with a checksum, and is never edited after it has been applied. `packages/db` also provides the connection pool and a `transaction` helper that rolls back on error and runs the transaction again after a serialization failure or deadlock. Constraints enforce the important rules in the database too: non-negative balances, one active seed pair per player, one open jackpot round.
 
 **The services do not use the database yet.** State is in memory behind small classes (`UserStore`, `Ledger`, `GamesService`) whose shape follows the tables. Moving them to PostgreSQL is the first milestone.
 

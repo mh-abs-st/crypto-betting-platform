@@ -15,9 +15,13 @@
     "dev:games": "tsx watch services/games/src/main.ts",
     "dev:gateway": "tsx watch services/gateway/src/main.ts",
     "dev:web": "npm --prefix web run dev",
-    "db:migrate": "psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -f db/migrations/001_init.sql"
+    "db:migrate": "tsx packages/db/src/cli.ts"
+  },
+  "dependencies": {
+    "pg": "^8.13.1"
   },
   "devDependencies": {
+    "@types/pg": "^8.11.10",
     "@types/node": "^22.10.0",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"
